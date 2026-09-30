@@ -14,7 +14,7 @@ This project profiles these specific bottlenecks using Nvidia Nsight Systems and
 
 ### Solution
 
-To resolve these inefficiencies, this project replaces the native PyTorch higher-order AD pipeline with a custom C++/CUDA implementation:
+To resolve these inefficiencies, this project, for a fixed MLP, replaces the native PyTorch higher-order AD pipeline with a custom C++/CUDA implementation:
 • Kernel Fusion: Combines elementwise operations and residual evaluations into a single monolithic CUDA kernel, keeping intermediate data entirely within high-speed GPU registers and Shared Memory.
 • Memory Optimization: Reduces redundant VRAM read/write cycles, shifting the workload from a memory-bandwidth-bound state to a compute-bound state.
 • PyTorch C++ Extension: Exposes the optimized CUDA backend seamlessly to Python using torch.utils.cpp_extension, allowing it to drop directly into existing PyTorch training and inference scripts.
