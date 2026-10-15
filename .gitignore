@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Builds and native extensions
+build/
+dist/
+*.so
+*.dylib
+*.dll
+*.o
+*.obj
+
+# Profiling and benchmark output
+artifacts/
+*.nsys-rep
+*.sqlite
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+

@@ -28,3 +28,51 @@ If you look at the engineering blogs behind torch.compile, their primary goal is
 3. Quantitative Finance & Risk Management Engineers
 Computing "Speed" or "Gamma" requires evaluating second and third-order derivatives of a pricing model or a neural network approximation. • High-frequency trading (HFT) firms and quantitative desks at major banks write custom CUDA architectures to compute these higher-order Greeks in real-time. They cannot tolerate framework graph-traversal latencies, making your exact approach (C++ extensions, registers, and Shared Memory optimization) standard practice for production code.
 
+## Repository layout
+
+```text
+GPU-Optimization/
+├── benchmarks/          # Reproducible baseline and fused-kernel benchmarks
+├── csrc/                # PyTorch C++ bindings and CUDA kernels
+├── docs/                # Architecture and kernel-contract notes
+├── scripts/             # Profiling entry points
+├── src/fused_hoad/      # Python package and correctness baselines
+└── tests/               # Numerical and extension-boundary tests
+```
+
+## Getting started
+
+Requirements: Python 3.10+, PyTorch 2.2+, the CUDA toolkit, and an NVIDIA GPU.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]' --no-build-isolation
+pytest
+```
+
+Run the eager Poisson-residual baseline with:
+
+```bash
+python -m benchmarks.benchmark_poisson
+```
+
+The benchmark uses a fixed `2 -> 64 -> 64 -> 64 -> 64 -> 1` tanh MLP and sweeps batches
+of 1K, 4K, 16K, and 64K points. For a quick CPU smoke test, pass
+`--device cpu --batch-sizes 32 --warmup 1 --iterations 2`.
+
+The native CUDA operation is currently a buildable integration seam. Its final signature
+will be implemented after the fixed MLP layout and target differential equation are
+specified; see `docs/architecture.md`.
+
+## Build order
+
+The project is intentionally structured from stable primitives toward specialized code:
+
+1. Lock the MLP contract in `specs.py` and construct it through `models.py`.
+2. Verify reusable derivative operators in `autodiff.py`.
+3. Express the target equation as a composition in `residuals.py`.
+4. Treat the eager implementation as the numerical oracle.
+5. Implement the matching fused CUDA path behind `_extension.py`.
+6. Require correctness checks before benchmarking and profiling either path.
+
