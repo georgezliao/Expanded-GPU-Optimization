@@ -2,6 +2,8 @@
 
 from types import ModuleType
 
+from torch import Tensor
+
 
 def load_extension() -> ModuleType:
     """Return the compiled extension or raise an actionable error."""
@@ -14,3 +16,44 @@ def load_extension() -> ModuleType:
         ) from exc
     return _C
 
+
+def extension_available() -> bool:
+    """Return whether the compiled extension can be imported."""
+    try:
+        load_extension()
+    except RuntimeError:
+        return False
+    return True
+
+
+def fused_forward_laplacian(
+    coordinates: Tensor, parameters: Tensor, version: int = 2
+) -> tuple[Tensor, Tensor]:
+    """Evaluate the fixed MLP and its input Laplacian with the CUDA extension.
+
+    ``version=0``: naive one thread per point. ``1``: 32-point shared-memory tiles.
+    ``2``: 64-point tiles with two points per lane.
+    """
+    output, laplacian = load_extension().fused_forward_laplacian(coordinates, parameters, version)
+    return output, laplacian
+
+
+def fused_forward_laplacian_backward(
+    coordinates: Tensor,
+    parameters: Tensor,
+    grad_output: Tensor,
+    grad_laplacian: Tensor,
+    version: int = 2,
+) -> tuple[Tensor, Tensor]:
+    """Return ``(grad_parameters, grad_coordinates)`` for the fused forward Laplacian.
+
+    ``version=1``: 32-point tiles, 1 block/SM. ``2``: 16-point tiles, 2 blocks/SM.
+    """
+    grad_parameters, grad_coordinates = load_extension().fused_forward_laplacian_backward(
+        coordinates,
+        parameters,
+        grad_output.reshape(-1).contiguous(),
+        grad_laplacian.reshape(-1).contiguous(),
+        version,
+    )
+    return grad_parameters, grad_coordinates

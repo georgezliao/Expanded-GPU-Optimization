@@ -14,10 +14,11 @@ setup(
             sources=[
                 str(ROOT / "csrc" / "bindings.cpp"),
                 str(ROOT / "csrc" / "fused_residual.cu"),
+                str(ROOT / "csrc" / "fused_backward.cu"),
             ],
             extra_compile_args={
                 "cxx": ["-O3"],
-                "nvcc": ["-O3", "--use_fast_math", "-lineinfo"],
+                "nvcc": ["-O3", "-lineinfo"],
             },
         )
     ],
