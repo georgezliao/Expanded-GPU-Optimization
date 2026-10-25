@@ -16,13 +16,15 @@ _TRAINABLE = (
     "eager",
     "forward_laplacian",
     "forward_laplacian_compiled",
+    "forward_laplacian_compiled_cudagraph",
     "fused_cuda_recompute",
     "fused_cuda_bwd_v1",
     "fused_cuda_bwd_v3",
     "fused_cuda",
 )
-# torch.compile manages its own graphs; capturing it inside an outer graph is unsupported.
-_GRAPHABLE = tuple(name for name in _TRAINABLE if name != "forward_laplacian_compiled")
+# torch.compile manages its own graphs (reduce-overhead = CUDA Graph trees over forward and
+# backward, optimizer outside); capturing it inside an outer graph is unsupported.
+_GRAPHABLE = tuple(name for name in _TRAINABLE if "compiled" not in name)
 
 
 def time_step(name: str, batch_size: int, warmup: int, iterations: int, graph: bool) -> Timing:
@@ -63,7 +65,7 @@ def main() -> None:
 
     print(describe())
     print(
-        f"{'backend':>28} {'graph':>6} {'batch':>10} {'mean ms':>10} {'median ms':>10} "
+        f"{'backend':>38} {'graph':>6} {'batch':>10} {'mean ms':>10} {'median ms':>10} "
         f"{'p90 ms':>10}"
     )
     print("(mean: wall clock over the loop; median/p90: per-step CUDA events)")
@@ -73,7 +75,7 @@ def main() -> None:
             for batch_size in args.batch_sizes:
                 timing = time_step(name, batch_size, args.warmup, args.iterations, graph)
                 print(
-                    f"{name:>28} {'yes' if graph else 'no':>6} {batch_size:>10,d} "
+                    f"{name:>38} {'yes' if graph else 'no':>6} {batch_size:>10,d} "
                     f"{timing.mean_ms:>10.3f} {timing.median_ms:>10.3f} {timing.p90_ms:>10.3f}"
                 )
 
