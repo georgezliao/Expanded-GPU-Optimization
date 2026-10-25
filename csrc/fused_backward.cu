@@ -410,6 +410,9 @@ __device__ __forceinline__ int o_scratch(int layer, int component, int neuron, i
   return ((layer * 4 + component) * kHidden + neuron) * kOTile + point;
 }
 
+// kSharedRows (v3): blocks on the same SM share one partials row and add into it with
+// atomicAdd (compiled to fire-and-forget RED). 84 rows fit in L2 where 168 private rows don't.
+template <bool kSharedRows>
 __global__ void __launch_bounds__(kThreads, 2)
 fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
                                 const float* __restrict__ params,
@@ -420,7 +423,8 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
                                 float* __restrict__ partials,
                                 float* __restrict__ scratch,
                                 int64_t batch,
-                                int64_t tiles) {
+                                int64_t tiles,
+                                int rows) {
   extern __shared__ float shared[];
   float* adj = shared;
   float* hid = adj + 4 * kOPlane;
@@ -430,7 +434,16 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
   float* s_x0 = s_gl + kOTile;
   float* s_x1 = s_x0 + kOTile;
   float* block_scratch = scratch + static_cast<int64_t>(blockIdx.x) * kOScratchPerBlock;
-  float* row = partials + static_cast<int64_t>(blockIdx.x) * kRowStride;
+  const int64_t row_index = kSharedRows ? blockIdx.x % rows : blockIdx.x;
+  float* row = partials + row_index * kRowStride;
+  // Private rows are overwritten; shared rows are pre-zeroed on the host and added into.
+  auto put = [&](int index, float value) {
+    if constexpr (kSharedRows) {
+      atomicAdd(row + index, value);
+    } else {
+      row[index] = value;
+    }
+  };
 
   const int t = threadIdx.x;
   const int lane = t % kOTile;
@@ -447,11 +460,13 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
   }
   // Each thread owns its 4x4 weight-gradient blocks in this block's row: zero them here,
   // update them after every layer, and never share them, so no synchronization is needed.
-  for (int layer = 0; layer < kHiddenLayers - 1; ++layer) {
+  if constexpr (!kSharedRows) {
+    for (int layer = 0; layer < kHiddenLayers - 1; ++layer) {
 #pragma unroll
-    for (int k = 0; k < 4; ++k) {
-      *reinterpret_cast<float4*>(row + kHiddenBase + layer * kHiddenStride +
-                                 (wo + k) * kHidden + wi) = make_float4(0.f, 0.f, 0.f, 0.f);
+      for (int k = 0; k < 4; ++k) {
+        *reinterpret_cast<float4*>(row + kHiddenBase + layer * kHiddenStride +
+                                   (wo + k) * kHidden + wi) = make_float4(0.f, 0.f, 0.f, 0.f);
+      }
     }
   }
 
@@ -599,13 +614,21 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
       float* weight_row = row + kHiddenBase + (layer - 1) * kHiddenStride;
 #pragma unroll
       for (int k = 0; k < 4; ++k) {
-        float4* slot = reinterpret_cast<float4*>(weight_row + (wo + k) * kHidden + wi);
-        float4 value = *slot;
-        value.x += d[k * 4];
-        value.y += d[k * 4 + 1];
-        value.z += d[k * 4 + 2];
-        value.w += d[k * 4 + 3];
-        *slot = value;
+        float* entry = weight_row + (wo + k) * kHidden + wi;
+        if constexpr (kSharedRows) {
+#pragma unroll
+          for (int m = 0; m < 4; ++m) {
+            atomicAdd(entry + m, d[k * 4 + m]);
+          }
+        } else {
+          float4* slot = reinterpret_cast<float4*>(entry);
+          float4 value = *slot;
+          value.x += d[k * 4];
+          value.y += d[k * 4 + 1];
+          value.z += d[k * 4 + 2];
+          value.w += d[k * 4 + 3];
+          *slot = value;
+        }
       }
       if (t < kHidden) {
         float acc = 0.0f;
@@ -687,18 +710,18 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
   __syncthreads();
 
   for (int k = t; k < kHidden * kInputs; k += kThreads) {
-    row[k] = small[kSmallW0 + k];
+    put(k, small[kSmallW0 + k]);
   }
   if (t < kHidden) {
-    row[kLayer0Bias + t] = small[kSmallBias + t];
+    put(kLayer0Bias + t, small[kSmallBias + t]);
     for (int layer = 1; layer < kHiddenLayers; ++layer) {
-      row[kHiddenBase + (layer - 1) * kHiddenStride + kHidden * kHidden + t] =
-          small[kSmallBias + layer * kHidden + t];
+      put(kHiddenBase + (layer - 1) * kHiddenStride + kHidden * kHidden + t,
+          small[kSmallBias + layer * kHidden + t]);
     }
-    row[kOutputBase + t] = small[kSmallWout + t];
+    put(kOutputBase + t, small[kSmallWout + t]);
   }
   if (t == 0) {
-    row[kOutputBase + kHidden] = small[kSmallBout];
+    put(kOutputBase + kHidden, small[kSmallBout]);
   }
 }
 
@@ -758,13 +781,18 @@ std::vector<torch::Tensor> fused_forward_laplacian_backward_cuda(torch::Tensor c
                       .contiguous();
   const int64_t tiles = (batch + kOTile - 1) / kOTile;
   const int blocks = static_cast<int>(std::min<int64_t>(tiles, 2 * sms));
-  auto partials = torch::empty({blocks, kRowStride}, options);
+  const bool shared_rows = version == 3;
+  const int rows = shared_rows ? std::min(blocks, sms) : blocks;
+  auto partials = shared_rows ? torch::zeros({rows, kRowStride}, options)
+                              : torch::empty({rows, kRowStride}, options);
   auto scratch = torch::empty({static_cast<int64_t>(blocks) * kOScratchPerBlock}, options);
-  fused_backward_occupancy_kernel<<<blocks, kThreads, kOSharedBytes, stream>>>(
+  auto kernel = shared_rows ? fused_backward_occupancy_kernel<true>
+                            : fused_backward_occupancy_kernel<false>;
+  kernel<<<blocks, kThreads, kOSharedBytes, stream>>>(
       coordinates.data_ptr<float>(), parameters.data_ptr<float>(), hidden_t.data_ptr<float>(),
       grad_output.data_ptr<float>(), grad_laplacian.data_ptr<float>(),
       grad_coordinates.data_ptr<float>(), partials.data_ptr<float>(), scratch.data_ptr<float>(),
-      batch, tiles);
+      batch, tiles, rows);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {partials.narrow(1, 0, kParameterCount).sum(0), grad_coordinates};
 }

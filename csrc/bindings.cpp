@@ -42,7 +42,7 @@ std::vector<torch::Tensor> fused_forward_laplacian_backward_cuda(
 std::vector<torch::Tensor> fused_forward_laplacian_backward(
     torch::Tensor coordinates, torch::Tensor parameters, torch::Tensor grad_output,
     torch::Tensor grad_laplacian, int64_t version) {
-  TORCH_CHECK(version == 1 || version == 2, "backward version must be 1 or 2");
+  TORCH_CHECK(version >= 1 && version <= 3, "backward version must be 1, 2 or 3");
   check_inputs(coordinates, parameters);
   for (const auto& grad : {grad_output, grad_laplacian}) {
     TORCH_CHECK(grad.is_cuda() && grad.is_contiguous() && grad.scalar_type() == torch::kFloat32,
