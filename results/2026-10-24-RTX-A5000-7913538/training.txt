@@ -1,0 +1,45 @@
+/users/gzliao/hoad.venv/lib/python3.12/site-packages/torch/_inductor/compile_fx.py:282: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
+  warnings.warn(
+W1024 21:38:19.146000 2415082 /oscar/home/gzliao/hoad.venv/lib/python3.12/site-packages/torch/_inductor/utils.py:1436] [0/0] Not enough SMs to use max_autotune_gemm mode
+gpu=NVIDIA RTX A5000 sm_86 64SMs driver=575.57.08 torch=2.8.0+cu128 cuda=12.8 python=3.12.15
+                     backend  graph      batch    mean ms  median ms     p90 ms
+(mean: wall clock over the loop; median/p90: per-step CUDA events)
+                       eager     no      4,096      8.125      8.094      8.190
+                       eager     no     16,384      8.152      8.123      8.187
+                       eager     no     65,536     22.328     22.315     22.350
+                       eager    yes      4,096      1.889      1.885      1.888
+                       eager    yes     16,384      5.300      5.297      5.300
+                       eager    yes     65,536     21.941     21.938     21.956
+           forward_laplacian     no      4,096      5.925      5.917      5.943
+           forward_laplacian     no     16,384      7.183      7.164      7.170
+           forward_laplacian     no     65,536     27.956     27.947     27.961
+           forward_laplacian    yes      4,096      1.569      1.567      1.571
+           forward_laplacian    yes     16,384      6.887      6.883      6.889
+           forward_laplacian    yes     65,536     27.656     27.651     27.665
+  forward_laplacian_compiled     no      4,096      2.399      2.369      2.386
+  forward_laplacian_compiled     no     16,384      2.601      2.590      2.599
+  forward_laplacian_compiled     no     65,536      9.362      9.353      9.371
+        fused_cuda_recompute     no      4,096      7.151      7.131      7.172
+        fused_cuda_recompute     no     16,384      7.380      7.353      7.362
+        fused_cuda_recompute     no     65,536     28.537     28.526     28.549
+        fused_cuda_recompute    yes      4,096      1.633      1.630      1.635
+        fused_cuda_recompute    yes     16,384      7.060      7.056      7.062
+        fused_cuda_recompute    yes     65,536     28.215     28.212     28.225
+           fused_cuda_bwd_v1     no      4,096      1.283      1.266      1.279
+           fused_cuda_bwd_v1     no     16,384      1.280      1.264      1.277
+           fused_cuda_bwd_v1     no     65,536      3.399      3.400      3.406
+           fused_cuda_bwd_v1    yes      4,096      0.279      0.275      0.276
+           fused_cuda_bwd_v1    yes     16,384      0.889      0.907      0.922
+           fused_cuda_bwd_v1    yes     65,536      3.445      3.446      3.451
+           fused_cuda_bwd_v3     no      4,096      1.333      1.316      1.325
+           fused_cuda_bwd_v3     no     16,384      1.324      1.317      1.332
+           fused_cuda_bwd_v3     no     65,536      3.836      3.832      3.871
+           fused_cuda_bwd_v3    yes      4,096      0.291      0.288      0.290
+           fused_cuda_bwd_v3    yes     16,384      0.982      1.010      1.032
+           fused_cuda_bwd_v3    yes     65,536      3.859      3.880      3.901
+                  fused_cuda     no      4,096      1.320      1.304      1.315
+                  fused_cuda     no     16,384      1.319      1.317      1.328
+                  fused_cuda     no     65,536      3.679      3.672      3.718
+                  fused_cuda    yes      4,096      0.290      0.286      0.291
+                  fused_cuda    yes     16,384      0.936      0.953      0.975
+                  fused_cuda    yes     65,536      3.690      3.698      3.731
