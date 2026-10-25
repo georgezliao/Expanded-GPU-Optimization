@@ -47,7 +47,8 @@ def fused_forward_laplacian_backward(
 ) -> tuple[Tensor, Tensor]:
     """Return ``(grad_parameters, grad_coordinates)`` for the fused forward Laplacian.
 
-    ``version=1``: 32-point tiles, 1 block/SM. ``2``: 16-point tiles, 2 blocks/SM.
+    ``version=1``: 32-point tiles, 1 block/SM. ``2``: 16-point tiles, 2 blocks/SM, one
+    private dW row per block. ``3``: as 2, but blocks on an SM share a row via atomicAdd.
     """
     grad_parameters, grad_coordinates = load_extension().fused_forward_laplacian_backward(
         coordinates,
