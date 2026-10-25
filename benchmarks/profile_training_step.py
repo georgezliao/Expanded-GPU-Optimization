@@ -5,6 +5,7 @@ import argparse
 import torch
 from torch.profiler import ProfilerActivity, profile
 
+from benchmarks.environment import describe
 from fused_hoad import DEFAULT_POISSON_MLP, build_mlp, get_backend, manufactured_source
 
 
@@ -36,6 +37,7 @@ def main() -> None:
 
     kernels = [e for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA]
     total = sum(e.device_time for e in kernels)
+    print(describe())
     print(f"{args.backend} batch={args.batch_size:,} kernels={len(kernels)} gpu_us={total:.0f}")
     by_name: dict[str, float] = {}
     for event in kernels:

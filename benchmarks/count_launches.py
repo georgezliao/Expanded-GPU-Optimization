@@ -5,6 +5,7 @@ import argparse
 import torch
 from torch.profiler import ProfilerActivity, profile
 
+from benchmarks.environment import describe
 from fused_hoad import BACKENDS, DEFAULT_POISSON_MLP, build_mlp, get_backend
 
 _LAUNCH_CALLS = ("cudaLaunchKernel", "cuLaunchKernel", "cudaGraphLaunch", "cuGraphLaunch")
@@ -20,6 +21,7 @@ def main() -> None:
     model = build_mlp(DEFAULT_POISSON_MLP).cuda().requires_grad_(False).eval()
     coordinates = torch.empty(args.batch_size, 2, device="cuda").uniform_(-1.0, 1.0)
 
+    print(describe())
     print(f"{'backend':>38} {'host launches':>14} {'gpu kernels':>12}")
     for name in args.backends:
         run = get_backend(name)
