@@ -4,11 +4,12 @@ Each backend is checked against the eager oracle at every batch size before it i
 """
 
 import argparse
-import time
 from dataclasses import dataclass
 
 import torch
 
+from benchmarks.environment import describe
+from benchmarks.timing import time_calls
 from fused_hoad import BACKENDS, DEFAULT_POISSON_MLP, build_mlp, error_metrics, get_backend
 from fused_hoad.backends import REFERENCE_BACKEND
 
@@ -19,8 +20,10 @@ _TOLERANCE = {torch.float32: 1e-3, torch.float64: 1e-8}
 class Result:
     backend: str
     batch_size: int
-    milliseconds: float
-    points_per_second: float
+    milliseconds: float  # wall-clock mean
+    median_ms: float  # CUDA-event median
+    p90_ms: float
+    points_per_second: float  # from the median
     peak_memory_mib: float | None
     max_abs_error: float
 
@@ -64,13 +67,7 @@ def benchmark_batch(
         # Earlier backends' CUDA-graph pools stay allocated, so report the peak above this.
         baseline_bytes = torch.cuda.memory_allocated(device)
 
-    start = time.perf_counter()
-    for _ in range(iterations):
-        run(model, coordinates)
-    _synchronize(device)
-    elapsed = time.perf_counter() - start
-
-    milliseconds = elapsed * 1_000.0 / iterations
+    timing = time_calls(lambda: run(model, coordinates), iterations, device)
     peak_memory_mib = None
     if device.type == "cuda":
         peak_memory_mib = (torch.cuda.max_memory_allocated(device) - baseline_bytes) / 1024**2
@@ -78,8 +75,10 @@ def benchmark_batch(
     return Result(
         backend=backend,
         batch_size=batch_size,
-        milliseconds=milliseconds,
-        points_per_second=batch_size / (milliseconds / 1_000.0),
+        milliseconds=timing.mean_ms,
+        median_ms=timing.median_ms,
+        p90_ms=timing.p90_ms,
+        points_per_second=batch_size / (timing.median_ms / 1_000.0),
         peak_memory_mib=peak_memory_mib,
         max_abs_error=metrics.max_absolute,
     )
@@ -114,11 +113,13 @@ def main() -> None:
         raise SystemExit("CUDA was requested but is not available")
     dtype = getattr(torch, args.dtype)
 
-    print(f"device={device} dtype={args.dtype} model=2x{DEFAULT_POISSON_MLP.hidden_dim}x4x1")
+    print(describe(device))
+    print(f"dtype={args.dtype} model=2x{DEFAULT_POISSON_MLP.hidden_dim}x4x1")
     print(
-        f"{'backend':>38} {'batch':>10} {'ms':>12} {'points/s':>16} "
-        f"{'peak MiB':>12} {'max abs err':>12}"
+        f"{'backend':>38} {'batch':>10} {'mean ms':>10} {'median ms':>10} {'p90 ms':>10} "
+        f"{'points/s':>14} {'peak MiB':>10} {'max abs err':>12}"
     )
+    print("(mean: wall clock over the loop; median/p90: per-call CUDA events; points/s: median)")
     for backend in args.backends:
         for batch_size in args.batch_sizes:
             result = benchmark_batch(
@@ -131,8 +132,9 @@ def main() -> None:
             )
             memory = "n/a" if result.peak_memory_mib is None else f"{result.peak_memory_mib:.1f}"
             print(
-                f"{result.backend:>38} {result.batch_size:>10,d} {result.milliseconds:>12.3f} "
-                f"{result.points_per_second:>16,.0f} {memory:>12} {result.max_abs_error:>12.2e}"
+                f"{result.backend:>38} {result.batch_size:>10,d} {result.milliseconds:>10.3f} "
+                f"{result.median_ms:>10.3f} {result.p90_ms:>10.3f} "
+                f"{result.points_per_second:>14,.0f} {memory:>10} {result.max_abs_error:>12.2e}"
             )
 
 

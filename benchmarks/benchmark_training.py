@@ -4,10 +4,11 @@
 """
 
 import argparse
-import time
 
 import torch
 
+from benchmarks.environment import describe
+from benchmarks.timing import Timing, time_calls
 from fused_hoad import BACKENDS, DEFAULT_POISSON_MLP, build_mlp, get_backend, manufactured_source
 from fused_hoad.training import cuda_graph_step
 
@@ -24,7 +25,7 @@ _TRAINABLE = (
 _GRAPHABLE = tuple(name for name in _TRAINABLE if name != "forward_laplacian_compiled")
 
 
-def time_step(name: str, batch_size: int, warmup: int, iterations: int, graph: bool) -> float:
+def time_step(name: str, batch_size: int, warmup: int, iterations: int, graph: bool) -> Timing:
     torch.manual_seed(0)
     model = build_mlp(DEFAULT_POISSON_MLP).cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, capturable=graph)
@@ -47,12 +48,7 @@ def time_step(name: str, batch_size: int, warmup: int, iterations: int, graph: b
 
     for _ in range(warmup):
         step()
-    torch.cuda.synchronize()
-    start = time.perf_counter()
-    for _ in range(iterations):
-        step()
-    torch.cuda.synchronize()
-    return (time.perf_counter() - start) * 1_000.0 / iterations
+    return time_calls(step, iterations, torch.device("cuda"))
 
 
 def main() -> None:
@@ -65,13 +61,21 @@ def main() -> None:
     parser.add_argument("--cuda-graph", action="store_true")
     args = parser.parse_args()
 
-    print(f"{'backend':>28} {'graph':>6} {'batch':>10} {'step ms':>10}")
+    print(describe())
+    print(
+        f"{'backend':>28} {'graph':>6} {'batch':>10} {'mean ms':>10} {'median ms':>10} "
+        f"{'p90 ms':>10}"
+    )
+    print("(mean: wall clock over the loop; median/p90: per-step CUDA events)")
     for name in args.backends:
         modes = (False, True) if args.cuda_graph and name in _GRAPHABLE else (False,)
         for graph in modes:
             for batch_size in args.batch_sizes:
-                ms = time_step(name, batch_size, args.warmup, args.iterations, graph)
-                print(f"{name:>28} {'yes' if graph else 'no':>6} {batch_size:>10,d} {ms:>10.3f}")
+                timing = time_step(name, batch_size, args.warmup, args.iterations, graph)
+                print(
+                    f"{name:>28} {'yes' if graph else 'no':>6} {batch_size:>10,d} "
+                    f"{timing.mean_ms:>10.3f} {timing.median_ms:>10.3f} {timing.p90_ms:>10.3f}"
+                )
 
 
 if __name__ == "__main__":
