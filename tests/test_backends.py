@@ -112,3 +112,23 @@ def test_forward_laplacian_rejects_unsupported_modules() -> None:
     model = torch.nn.Sequential(torch.nn.Linear(2, 4), torch.nn.ReLU(), torch.nn.Linear(4, 1))
     with pytest.raises(TypeError, match="ReLU"):
         forward_laplacian(model, torch.randn(3, 2))
+
+
+def test_poisson_training_loop_reduces_loss_on_cpu() -> None:
+    from fused_hoad.training import boundary_points, poisson_loss_fn, relative_l2_error
+
+    torch.manual_seed(0)
+    model = build_mlp(MLPConfig(input_dim=2, hidden_dim=16, hidden_layers=2))
+    interior = torch.rand(256, 2) * 2 - 1
+    boundary = boundary_points(64, device="cpu")
+    assert torch.all(boundary.abs().max(dim=1).values == 1.0)
+    loss_fn = poisson_loss_fn(forward_laplacian, model, interior, boundary)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    first = loss_fn().item()
+    for _ in range(30):
+        optimizer.zero_grad()
+        loss = loss_fn()
+        loss.backward()
+        optimizer.step()
+    assert loss.item() < 0.9 * first
+    assert 0.0 < relative_l2_error(model, resolution=11) < 10.0

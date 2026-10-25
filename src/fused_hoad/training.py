@@ -38,3 +38,51 @@ def cuda_graph_step(
         return static_loss
 
     return replay
+
+
+def boundary_points(count: int, *, device, dtype=torch.float32, generator=None) -> Tensor:
+    """Sample ``count`` points uniformly on the boundary of ``[-1, 1]^2``."""
+    t = torch.rand(count, device=device, dtype=dtype, generator=generator) * 2 - 1
+    side = torch.randint(0, 4, (count,), device=device, generator=generator)
+    fixed = torch.where(side % 2 == 0, -1.0, 1.0).to(dtype)  # sides: x=-1, x=1, y=-1, y=1
+    x_is_fixed = side < 2
+    x = torch.where(x_is_fixed, fixed, t)
+    y = torch.where(x_is_fixed, t, fixed)
+    return torch.stack((x, y), dim=1)
+
+
+def relative_l2_error(model: torch.nn.Module, *, resolution: int = 101) -> float:
+    """Relative L2 error of ``model`` against ``sin(pi x) sin(pi y)`` on a uniform grid."""
+    from fused_hoad.problems.poisson import manufactured_solution
+
+    parameter = next(model.parameters())
+    axis = torch.linspace(-1.0, 1.0, resolution, device=parameter.device, dtype=parameter.dtype)
+    grid = torch.cartesian_prod(axis, axis)
+    with torch.no_grad():
+        error = model(grid) - manufactured_solution(grid)
+        return (error.norm() / manufactured_solution(grid).norm()).item()
+
+
+def poisson_loss_fn(
+    backend: Callable,
+    model: torch.nn.Module,
+    interior: Tensor,
+    boundary: Tensor,
+    *,
+    boundary_weight: float = 100.0,
+) -> Callable[[], Tensor]:
+    """Return a closure for the Poisson PINN loss: interior residual + weighted u=0 on boundary.
+
+    ``backend`` computes ``(u, Laplacian u)`` on the interior points; the boundary term uses a
+    plain forward pass so every backend shares it.
+    """
+    from fused_hoad.problems.poisson import manufactured_source
+
+    source = manufactured_source(interior)
+
+    def loss_fn() -> Tensor:
+        _, lap = backend(model, interior)
+        residual = (lap - source).pow(2).mean()
+        return residual + boundary_weight * model(boundary).pow(2).mean()
+
+    return loss_fn
