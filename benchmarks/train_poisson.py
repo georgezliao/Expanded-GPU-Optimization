@@ -1,6 +1,7 @@
 """Train the 2D Poisson PINN end to end per backend; report wall time and relative L2 error."""
 
 import argparse
+import hashlib
 import time
 
 import torch
@@ -15,7 +16,7 @@ from fused_hoad.training import (
 )
 
 
-def train(name: str, args: argparse.Namespace, graph: bool) -> tuple[float, float, float]:
+def train(name: str, args: argparse.Namespace, graph: bool) -> tuple[float, float, float, str]:
     torch.manual_seed(args.seed)
     model = build_mlp(DEFAULT_POISSON_MLP).cuda()
     generator = torch.Generator(device="cuda").manual_seed(args.seed)
@@ -38,7 +39,10 @@ def train(name: str, args: argparse.Namespace, graph: bool) -> tuple[float, floa
             optimizer.step()
     torch.cuda.synchronize()
     seconds = time.perf_counter() - start
-    return seconds, loss.item(), relative_l2_error(model)
+    digest = hashlib.sha256()
+    for parameter in model.parameters():
+        digest.update(parameter.detach().cpu().numpy().tobytes())
+    return seconds, loss.item(), relative_l2_error(model), digest.hexdigest()[:12]
 
 
 def main() -> None:
@@ -67,13 +71,18 @@ def main() -> None:
         f"steps={args.steps} interior={args.interior} boundary={args.boundary} lr={args.lr} "
         f"seed={args.seed} loss=mean(res^2)+100*mean(u_b^2) (time includes compile/capture)"
     )
-    print(f"{'backend':>30} {'graph':>6} {'seconds':>9} {'final loss':>12} {'rel L2':>10}")
+    print(
+        f"{'backend':>30} {'graph':>6} {'seconds':>9} {'final loss':>14} {'rel L2':>12} "
+        f"{'weights sha256':>14}"
+    )
     for name in args.backends:
         modes = (False, True) if args.cuda_graph and "compiled" not in name else (False,)
         for graph in modes:
-            seconds, loss, error = train(name, args, graph)
+            seconds, loss, error, digest = train(name, args, graph)
             flag = "yes" if graph else "no"
-            print(f"{name:>30} {flag:>6} {seconds:>9.2f} {loss:>12.3e} {error:>10.3e}")
+            print(
+                f"{name:>30} {flag:>6} {seconds:>9.2f} {loss:>14.6e} {error:>12.6e} {digest:>14}"
+            )
 
 
 if __name__ == "__main__":
