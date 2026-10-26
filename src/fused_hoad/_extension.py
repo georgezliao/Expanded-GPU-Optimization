@@ -51,6 +51,7 @@ def fused_forward_laplacian_backward(
     ``version=1``: 32-point tiles, 1 block/SM. ``2``: 16-point tiles, 2 blocks/SM, one
     private dW row per block. ``3``: as 2, but blocks on an SM share a row via atomicAdd.
     ``4``: as 2, but layer 0's constant J/L jet components are not stored in scratch.
+    ``5``: as 4, with 8 inputs per thread in the hbar GEMM.
     """
     grad_parameters, grad_coordinates = load_extension().fused_forward_laplacian_backward(
         coordinates,
