@@ -132,3 +132,17 @@ def test_poisson_training_loop_reduces_loss_on_cpu() -> None:
         optimizer.step()
     assert loss.item() < 0.9 * first
     assert 0.0 < relative_l2_error(model, resolution=11) < 10.0
+
+
+def test_pack_cache_tracks_model_identity_and_in_place_updates() -> None:
+    from fused_hoad.backends.fused import _packed_parameters
+    from fused_hoad.parameters import pack_poisson_parameters
+
+    with torch.no_grad():
+        first = build_mlp(DEFAULT_POISSON_MLP)
+        packed = _packed_parameters(first)
+        assert _packed_parameters(first) is packed  # cached
+        first[0].weight.mul_(2.0)
+        torch.testing.assert_close(_packed_parameters(first), pack_poisson_parameters(first))
+        second = build_mlp(DEFAULT_POISSON_MLP)
+        torch.testing.assert_close(_packed_parameters(second), pack_poisson_parameters(second))
