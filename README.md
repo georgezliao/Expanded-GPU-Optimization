@@ -41,8 +41,10 @@ Eager autograd computes the Laplacian with one backward pass for the gradient an
 | forward v2 (default) | v1 with two points per lane (64-point tiles), float2 loads |
 | forward v3 | 32-point tiles, hidden GEMMs on TF32 tensor cores (WMMA) |
 | backward v1 | persistent blocks re-run the tile forward, save pre-activations to scratch, walk the layers back with the adjoint jet in shared memory; per-block weight-gradient rows, summed on the host |
-| backward v2 (default) | 16-point tiles, weights read through L1, 2 blocks/SM |
+| backward v2 | 16-point tiles, weights read through L1, 2 blocks/SM |
 | backward v3 | v2 with one weight-gradient row per SM, updated with `atomicAdd` |
+| backward v4 (default) | v2 without storing layer 0's constant jet components in scratch |
+| backward v5 | v4 with 8 inputs per thread in the `Wᵀ·zbar` GEMM |
 
 The backward kernel returns gradients for the parameters and the input coordinates. A PyTorch reference backward, which recomputes the jet and calls `autograd.grad`, is kept for testing.
 
@@ -50,16 +52,17 @@ Correctness is checked before any timing. The fused forward matches the PyTorch 
 
 ## Results
 
-Headline numbers come from `scripts/oscar_bench.sbatch`. Raw outputs are in `results/<date>-<gpu>-<job>/`. The tables below are from `results/2026-10-24-RTX-A5000-7913538/` (RTX A5000, driver 575.57.08, torch 2.8.0+cu128, commit `8670f17`). Times are medians of per-iteration CUDA events, in milliseconds.
+Headline numbers come from `scripts/oscar_bench.sbatch`. Raw outputs are in `results/<date>-<gpu>-<job>/`. The tables below are from `results/2026-10-25-RTX-A5000-7953760/` (RTX A5000, driver 575.57.08, torch 2.8.0+cu128, commit `d6a37d7`). Times are medians of per-iteration CUDA events, in milliseconds.
 
 Residual evaluation, `(u, Laplacian u)`:
 
 | backend | 1K | 16K | 64K |
 |---|---|---|---|
-| eager autograd | 2.796 | 2.790 | 6.851 |
-| forward Laplacian + `torch.compile` | 0.494 | 0.985 | 3.699 |
-| forward Laplacian + `torch.compile` (reduce-overhead) | 0.173 | 0.973 | 3.690 |
-| fused CUDA forward v2 | 0.101 | 0.128 | 0.555 |
+| eager autograd | 2.157 | 2.137 | 6.833 |
+| forward Laplacian + `torch.compile` | 0.367 | 0.988 | 3.697 |
+| forward Laplacian + `torch.compile` (reduce-overhead) | 0.132 | 0.974 | 3.689 |
+| fused CUDA forward v2 | 0.075 | 0.127 | 0.539 |
+| fused CUDA forward v3 (TF32) | 0.076 | 0.184 | 0.685 |
 
 At 16K, eager launches 94 kernels per call, `torch.compile` 19, and the fused path 1.
 
@@ -67,20 +70,22 @@ Training step (forward, backward, Adam):
 
 | backend | 4K | 16K | 64K |
 |---|---|---|---|
-| eager autograd | 8.094 | 8.123 | 22.315 |
-| eager autograd, step captured as a CUDA graph | 1.885 | 5.297 | 21.938 |
-| forward Laplacian + `torch.compile` | 2.369 | 2.590 | 9.353 |
-| fused CUDA forward v2 + backward v2 | 1.304 | 1.317 | 3.672 |
-| same, step captured as a CUDA graph | 0.286 | 0.953 | 3.698 |
+| eager autograd | 6.109 | 6.096 | 22.244 |
+| eager autograd, step captured as a CUDA graph | 1.870 | 5.272 | 21.871 |
+| forward Laplacian + `torch.compile` | 1.757 | 2.588 | 9.352 |
+| fused CUDA forward v2 + backward v2 | 0.962 | 0.971 | 3.595 |
+| fused CUDA forward v2 + backward v4 | 0.961 | 0.974 | 3.508 |
+| same, step captured as a CUDA graph | 0.280 | 0.880 | 3.564 |
 
-Times vary between GPU models and between Slurm jobs on the same model. Compare rows within one results directory.
+Times vary between GPU models and between Slurm jobs on the same model. At 1K–4K the call is short enough that host CPU speed matters: the same kernel measured 23 µs and 45 µs of host time per call on two nodes. Compare rows within one results directory. The earlier run, `results/2026-10-24-RTX-A5000-7913538/`, is kept for reference.
 
 Things that did not help:
 
 - Forward v0 was slower than eager at 64K. Its per-thread jet lives in local memory, and ncu reported 93% DRAM throughput.
-- Forward v3 (TF32) was slower than v2 at 16K and 64K on the A5000, and its Laplacian error was about 1e3 times larger.
+- Forward v3 (TF32) was slower than v2 at 16K and 64K, and its Laplacian error was about 1e3 times larger. On an A40, ncu showed 0.25 instructions issued per cycle against 0.62 for v2, with the tensor pipe active 15% of the time.
 - Backward v3 (SM-shared atomic rows) was slower than v2 on an RTX A5500. DRAM throughput dropped only from 46% to 41%.
 - Backward v2 reaches 2 blocks/SM, but its training step was no faster than v1 on the A40 or the A5500.
+- Backward v5 lowered the `mio_throttle` stall ratio from 1.65 to 1.45 on an A40, but the 64K training step stayed at about 2.76 ms, the same as v4.
 - `torch.func` (`vmap(jacfwd(jacrev))`) was slower than eager at every batch size tested.
 
 ## Repository layout
