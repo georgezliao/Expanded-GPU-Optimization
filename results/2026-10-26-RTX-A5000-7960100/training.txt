@@ -1,0 +1,66 @@
+/users/gzliao/hoad.venv/lib/python3.12/site-packages/torch/_inductor/compile_fx.py:282: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
+  warnings.warn(
+W1026 03:03:49.676000 1104354 /oscar/home/gzliao/hoad.venv/lib/python3.12/site-packages/torch/_inductor/utils.py:1436] [0/0] Not enough SMs to use max_autotune_gemm mode
+gpu=NVIDIA RTX A5000 sm_86 64SMs driver=575.57.08 torch=2.8.0+cu128 cuda=12.8 python=3.12.15
+                               backend  graph      batch    mean ms  median ms     p90 ms
+(mean: wall clock over the loop; median/p90: per-step CUDA events)
+                                 eager     no      4,096      6.014      5.991      6.025
+                                 eager     no     16,384      6.200      6.085      6.501
+                                 eager     no     65,536     22.309     22.261     22.420
+                                 eager    yes      4,096      1.894      1.887      1.890
+                                 eager    yes     16,384      5.295      5.290      5.298
+                                 eager    yes     65,536     21.938     21.922     21.963
+                     forward_laplacian     no      4,096      4.350      4.318      4.398
+                     forward_laplacian     no     16,384      7.170      7.138      7.292
+                     forward_laplacian     no     65,536     27.976     27.932     28.091
+                     forward_laplacian    yes      4,096      1.570      1.566      1.569
+                     forward_laplacian    yes     16,384      6.889      6.885      6.892
+                     forward_laplacian    yes     65,536     27.654     27.649     27.659
+            forward_laplacian_compiled     no      4,096      1.754      1.717      1.859
+            forward_laplacian_compiled     no     16,384      2.586      2.578      2.587
+            forward_laplacian_compiled     no     65,536      9.381      9.361      9.461
+  forward_laplacian_compiled_cudagraph     no      4,096      1.069      1.065      1.071
+  forward_laplacian_compiled_cudagraph     no     16,384      2.564      2.555      2.561
+  forward_laplacian_compiled_cudagraph     no     65,536      9.334      9.330      9.342
+                  fused_cuda_recompute     no      4,096      5.356      5.320      5.409
+                  fused_cuda_recompute     no     16,384      7.365      7.336      7.479
+                  fused_cuda_recompute     no     65,536     28.550     28.508     28.671
+                  fused_cuda_recompute    yes      4,096      1.634      1.629      1.632
+                  fused_cuda_recompute    yes     16,384      7.058      7.052      7.060
+                  fused_cuda_recompute    yes     65,536     28.215     28.208     28.226
+                     fused_cuda_bwd_v1     no      4,096      0.934      0.922      0.929
+                     fused_cuda_bwd_v1     no     16,384      0.938      0.926      0.959
+                     fused_cuda_bwd_v1     no     65,536      3.410      3.405      3.410
+                     fused_cuda_bwd_v1    yes      4,096      0.286      0.276      0.279
+                     fused_cuda_bwd_v1    yes     16,384      0.878      0.855      0.901
+                     fused_cuda_bwd_v1    yes     65,536      3.403      3.412      3.418
+                     fused_cuda_bwd_v3     no      4,096      0.970      0.954      0.961
+                     fused_cuda_bwd_v3     no     16,384      0.979      0.969      1.007
+                     fused_cuda_bwd_v3     no     65,536      3.792      3.789      3.823
+                     fused_cuda_bwd_v3    yes      4,096      0.318      0.315      0.316
+                     fused_cuda_bwd_v3    yes     16,384      0.991      1.000      1.014
+                     fused_cuda_bwd_v3    yes     65,536      3.806      3.802      3.831
+                     fused_cuda_bwd_v5     no      4,096      0.959      0.946      0.951
+                     fused_cuda_bwd_v5     no     16,384      0.968      0.956      0.978
+                     fused_cuda_bwd_v5     no     65,536      3.459      3.458      3.492
+                     fused_cuda_bwd_v5    yes      4,096      0.281      0.279      0.280
+                     fused_cuda_bwd_v5    yes     16,384      0.882      0.860      0.940
+                     fused_cuda_bwd_v5    yes     65,536      3.496      3.495      3.542
+                     fused_cuda_bwd_v4     no      4,096      0.961      0.947      0.957
+                     fused_cuda_bwd_v4     no     16,384      0.969      0.954      0.984
+                     fused_cuda_bwd_v4     no     65,536      3.537      3.534      3.565
+                     fused_cuda_bwd_v4    yes      4,096      0.287      0.284      0.286
+                     fused_cuda_bwd_v4    yes     16,384      0.904      0.894      0.946
+                     fused_cuda_bwd_v4    yes     65,536      3.531      3.547      3.579
+                     fused_cuda_bwd_v2     no      4,096      0.966      0.947      0.954
+                     fused_cuda_bwd_v2     no     16,384      0.969      0.954      0.976
+                     fused_cuda_bwd_v2     no     65,536      3.618      3.622      3.676
+                     fused_cuda_bwd_v2    yes      4,096      0.292      0.289      0.292
+                     fused_cuda_bwd_v2    yes     16,384      0.937      0.952      0.969
+                     fused_cuda_bwd_v2    yes     65,536      3.650      3.667      3.715
+                            fused_cuda     no      4,096      0.963      0.951      0.955
+                            fused_cuda     no     16,384      0.962      0.956      0.965
+                            fused_cuda     no     65,536      3.309      3.300      3.328
+                            fused_cuda    yes      4,096      0.276      0.269      0.271
+                            fused_cuda    yes     16,384      0.863      0.878      0.892
+                            fused_cuda    yes     65,536      3.345      3.348      3.353
