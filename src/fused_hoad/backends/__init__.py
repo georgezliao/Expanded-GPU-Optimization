@@ -43,6 +43,7 @@ if extension_available():
     BACKENDS["fused_cuda_v1"] = partial(fused_laplacian, version=1)
     BACKENDS["fused_cuda"] = fused_laplacian
     BACKENDS["fused_cuda_tf32"] = partial(fused_laplacian, version=3)
+    BACKENDS["fused_cuda_tf32_pipelined"] = partial(fused_laplacian, version=4)
     BACKENDS["fused_cuda_bwd_v1"] = partial(fused_laplacian, backward="cuda_v1")
     BACKENDS["fused_cuda_bwd_v3"] = partial(fused_laplacian, backward="cuda_v3")
     BACKENDS["fused_cuda_bwd_v5"] = partial(fused_laplacian, backward="cuda_v5")
@@ -54,6 +55,7 @@ if extension_available():
         "fused_cuda_v1",
         "fused_cuda",
         "fused_cuda_tf32",
+        "fused_cuda_tf32_pipelined",
         "fused_cuda_bwd_v1",
         "fused_cuda_bwd_v3",
         "fused_cuda_bwd_v5",

@@ -33,7 +33,8 @@ def fused_forward_laplacian(
 
     ``version=0``: naive one thread per point. ``1``: 32-point shared-memory tiles.
     ``2``: 64-point tiles with two points per lane. ``3``: 32-point tiles with TF32
-    tensor-core GEMMs (lower precision; sm_80+).
+    tensor-core GEMMs (lower precision; sm_80+). ``4``: v3 with cp.async double-buffered
+    weights and no separate Z buffer.
     """
     output, laplacian = load_extension().fused_forward_laplacian(coordinates, parameters, version)
     return output, laplacian

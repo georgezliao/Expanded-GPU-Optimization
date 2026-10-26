@@ -30,7 +30,7 @@ std::vector<torch::Tensor> fused_forward_laplacian_cuda(
 
 std::vector<torch::Tensor> fused_forward_laplacian(
     torch::Tensor coordinates, torch::Tensor parameters, int64_t version) {
-  TORCH_CHECK(version >= 0 && version <= 3, "version must be 0, 1, 2 or 3");
+  TORCH_CHECK(version >= 0 && version <= 4, "version must be 0 to 4");
   check_inputs(coordinates, parameters);
   return fused_forward_laplacian_cuda(coordinates, parameters, version);
 }
