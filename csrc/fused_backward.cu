@@ -414,7 +414,9 @@ __device__ __forceinline__ int o_scratch(int layer, int component, int neuron, i
 // atomicAdd (compiled to fire-and-forget RED). 84 rows fit in L2 where 168 private rows don't.
 // kCompactScratch (v4): layer 0's J (= W0 columns) and L (= 0) are constants, so only its z_v
 // is stored; the backward rebuilds the rest from the parameters.
-template <bool kSharedRows, bool kCompactScratch>
+// kWideHbar (v5): the hbar = W^T zbar GEMM gives each thread 8 inputs and half of the o-sum
+// (2 float4 weight loads + 4 smem loads per 32 FMAs instead of 1 + 4 per 16).
+template <bool kSharedRows, bool kCompactScratch, bool kWideHbar>
 __global__ void __launch_bounds__(kThreads, 2)
 fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
                                 const float* __restrict__ params,
@@ -646,35 +648,89 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
         small[kSmallBias + layer * kHidden + t] += acc;
       }
 
-      float gv[kONeurons], gj0[kONeurons], gj1[kONeurons], gl[kONeurons];
+      if constexpr (kWideHbar) {
+        // Warp w owns inputs 8w..8w+7. Its two half-warps split the sum over o, then trade
+        // halves with a shuffle so each thread finishes 4 of the 8 inputs for its point.
+        const int i0 = (t / 32) * 8;
+        const int half = (t % 32) / 16;
+        float g[4][8];
 #pragma unroll
-      for (int k = 0; k < kONeurons; ++k) {
-        gv[k] = gj0[k] = gj1[k] = gl[k] = 0.0f;
-      }
-#pragma unroll 8
-      for (int o = 0; o < kHidden; ++o) {
-        const int a = o * kOStride + lane;
-        const float av = adj[a], aj0 = adj[kOPlane + a], aj1 = adj[2 * kOPlane + a],
-                    al = adj[3 * kOPlane + a];
-        const float4 w4 = __ldg(reinterpret_cast<const float4*>(weight + o * kHidden + o0));
-        const float w[kONeurons] = {w4.x, w4.y, w4.z, w4.w};
+        for (int c = 0; c < 4; ++c) {
 #pragma unroll
-        for (int k = 0; k < kONeurons; ++k) {
-          gv[k] = fmaf(w[k], av, gv[k]);
-          gj0[k] = fmaf(w[k], aj0, gj0[k]);
-          gj1[k] = fmaf(w[k], aj1, gj1[k]);
-          gl[k] = fmaf(w[k], al, gl[k]);
+          for (int k = 0; k < 8; ++k) {
+            g[c][k] = 0.0f;
+          }
         }
-      }
-      __syncthreads();
+#pragma unroll 8
+        for (int j = 0; j < kHidden / 2; ++j) {
+          const int o = half * (kHidden / 2) + j;
+          const int a = o * kOStride + lane;
+          const float h4[4] = {adj[a], adj[kOPlane + a], adj[2 * kOPlane + a],
+                               adj[3 * kOPlane + a]};
+          const float4 wa = __ldg(reinterpret_cast<const float4*>(weight + o * kHidden + i0));
+          const float4 wb =
+              __ldg(reinterpret_cast<const float4*>(weight + o * kHidden + i0 + 4));
+          const float w[8] = {wa.x, wa.y, wa.z, wa.w, wb.x, wb.y, wb.z, wb.w};
+#pragma unroll
+          for (int c = 0; c < 4; ++c) {
+#pragma unroll
+            for (int k = 0; k < 8; ++k) {
+              g[c][k] = fmaf(w[k], h4[c], g[c][k]);
+            }
+          }
+        }
+        float keep[4][4];
+#pragma unroll
+        for (int c = 0; c < 4; ++c) {
+#pragma unroll
+          for (int k = 0; k < 4; ++k) {
+            const float mine = half ? g[c][k + 4] : g[c][k];
+            const float send = half ? g[c][k] : g[c][k + 4];
+            keep[c][k] = mine + __shfl_xor_sync(0xffffffffu, send, 16);
+          }
+        }
+        __syncthreads();  // every read of adj for this layer is done
 
 #pragma unroll
-      for (int k = 0; k < kONeurons; ++k) {
-        const int a = (o0 + k) * kOStride + lane;
-        adj[a] = gv[k];
-        adj[kOPlane + a] = gj0[k];
-        adj[2 * kOPlane + a] = gj1[k];
-        adj[3 * kOPlane + a] = gl[k];
+        for (int k = 0; k < 4; ++k) {
+          const int a = (i0 + 4 * half + k) * kOStride + lane;
+          adj[a] = keep[0][k];
+          adj[kOPlane + a] = keep[1][k];
+          adj[2 * kOPlane + a] = keep[2][k];
+          adj[3 * kOPlane + a] = keep[3][k];
+        }
+        __syncthreads();  // the next step reads adj with the jet mapping
+      } else {
+        float gv[kONeurons], gj0[kONeurons], gj1[kONeurons], gl[kONeurons];
+  #pragma unroll
+        for (int k = 0; k < kONeurons; ++k) {
+          gv[k] = gj0[k] = gj1[k] = gl[k] = 0.0f;
+        }
+  #pragma unroll 8
+        for (int o = 0; o < kHidden; ++o) {
+          const int a = o * kOStride + lane;
+          const float av = adj[a], aj0 = adj[kOPlane + a], aj1 = adj[2 * kOPlane + a],
+                      al = adj[3 * kOPlane + a];
+          const float4 w4 = __ldg(reinterpret_cast<const float4*>(weight + o * kHidden + o0));
+          const float w[kONeurons] = {w4.x, w4.y, w4.z, w4.w};
+  #pragma unroll
+          for (int k = 0; k < kONeurons; ++k) {
+            gv[k] = fmaf(w[k], av, gv[k]);
+            gj0[k] = fmaf(w[k], aj0, gj0[k]);
+            gj1[k] = fmaf(w[k], aj1, gj1[k]);
+            gl[k] = fmaf(w[k], al, gl[k]);
+          }
+        }
+        __syncthreads();
+
+  #pragma unroll
+        for (int k = 0; k < kONeurons; ++k) {
+          const int a = (o0 + k) * kOStride + lane;
+          adj[a] = gv[k];
+          adj[kOPlane + a] = gj0[k];
+          adj[2 * kOPlane + a] = gj1[k];
+          adj[3 * kOPlane + a] = gl[k];
+        }
       }
     }
 
@@ -792,9 +848,10 @@ std::vector<torch::Tensor> fused_forward_laplacian_backward_cuda(torch::Tensor c
   auto partials = shared_rows ? torch::zeros({rows, kRowStride}, options)
                               : torch::empty({rows, kRowStride}, options);
   auto scratch = torch::empty({static_cast<int64_t>(blocks) * kOScratchPerBlock}, options);
-  auto kernel = shared_rows        ? fused_backward_occupancy_kernel<true, false>
-                : version == 4 ? fused_backward_occupancy_kernel<false, true>
-                               : fused_backward_occupancy_kernel<false, false>;
+  auto kernel = shared_rows        ? fused_backward_occupancy_kernel<true, false, false>
+                : version == 4 ? fused_backward_occupancy_kernel<false, true, false>
+                : version == 5 ? fused_backward_occupancy_kernel<false, true, true>
+                               : fused_backward_occupancy_kernel<false, false, false>;
   kernel<<<blocks, kThreads, kOSharedBytes, stream>>>(
       coordinates.data_ptr<float>(), parameters.data_ptr<float>(), hidden_t.data_ptr<float>(),
       grad_output.data_ptr<float>(), grad_laplacian.data_ptr<float>(),
