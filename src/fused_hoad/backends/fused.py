@@ -21,7 +21,14 @@ from fused_hoad.parameters import (
 _cache: dict[str, object] = {}
 
 # Backward modes: fused CUDA kernels by version, or the PyTorch recompute reference.
-_CUDA_BACKWARD_VERSIONS = {"cuda": 4, "cuda_v1": 1, "cuda_v2": 2, "cuda_v3": 3, "cuda_v5": 5}
+_CUDA_BACKWARD_VERSIONS = {
+    "cuda": 6,
+    "cuda_v1": 1,
+    "cuda_v2": 2,
+    "cuda_v3": 3,
+    "cuda_v4": 4,
+    "cuda_v5": 5,
+}
 BACKWARD_MODES = (*_CUDA_BACKWARD_VERSIONS, "recompute")
 
 
@@ -119,10 +126,9 @@ def fused_laplacian(
 ) -> tuple[Tensor, Tensor]:
     """Evaluate the fixed Poisson MLP and its input Laplacian with one CUDA kernel.
 
-    ``backward`` picks the gradient path when autograd is active: ``"cuda"`` (fused v4
-    kernel), ``"cuda_v1"`` / ``"cuda_v2"`` / ``"cuda_v3"`` / ``"cuda_v5"`` (other fused
-    versions) or ``"recompute"``
-    (PyTorch reference).
+    ``backward`` picks the gradient path when autograd is active: ``"cuda"`` (fused v6
+    kernel), ``"cuda_vN"`` for another fused version (see ``_CUDA_BACKWARD_VERSIONS``), or
+    ``"recompute"`` (PyTorch reference).
     """
     if backward not in BACKWARD_MODES:
         raise ValueError(f"backward must be one of {BACKWARD_MODES}")
