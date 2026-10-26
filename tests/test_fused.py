@@ -103,6 +103,7 @@ def _poisson_loss(u: torch.Tensor, lap: torch.Tensor, coordinates: torch.Tensor)
         "fused_cuda",
         "fused_cuda_bwd_v1",
         "fused_cuda_bwd_v3",
+        "fused_cuda_bwd_v2",
         "fused_cuda_recompute",
     ],
 )
@@ -156,7 +157,7 @@ def test_fused_inference_path_stays_out_of_autograd() -> None:
     assert not u.requires_grad and not lap.requires_grad
 
 
-BACKWARD_VERSIONS = [1, 2, 3]
+BACKWARD_VERSIONS = [1, 2, 3, 4]
 
 
 def _backward_pair(batch: int, weight_scale: float = 1.0, seed: int = 0, version: int = 2):
