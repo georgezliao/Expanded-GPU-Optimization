@@ -40,11 +40,13 @@ Eager autograd computes the Laplacian with one backward pass for the gradient an
 | forward v1 | 32-point tiles, jets and staged weights in shared memory, register-tiled GEMM |
 | forward v2 (default) | v1 with two points per lane (64-point tiles), float2 loads |
 | forward v3 | 32-point tiles, hidden GEMMs on TF32 tensor cores (WMMA) |
+| forward v4 | v3 with `cp.async` double-buffered weights and no separate Z buffer (TF32, opt-in) |
 | backward v1 | persistent blocks re-run the tile forward, save pre-activations to scratch, walk the layers back with the adjoint jet in shared memory; per-block weight-gradient rows, summed on the host |
 | backward v2 | 16-point tiles, weights read through L1, 2 blocks/SM |
 | backward v3 | v2 with one weight-gradient row per SM, updated with `atomicAdd` |
-| backward v4 (default) | v2 without storing layer 0's constant jet components in scratch |
+| backward v4 | v2 without storing layer 0's constant jet components in scratch |
 | backward v5 | v4 with 8 inputs per thread in the `Wᵀ·zbar` GEMM |
+| backward v6 (default) | v4 with stride-20 shared-memory rows and float4 loads in the weight-gradient loop |
 
 The backward kernel returns gradients for the parameters and the input coordinates. A PyTorch reference backward, which recomputes the jet and calls `autograd.grad`, is kept for testing.
 
@@ -52,17 +54,18 @@ Correctness is checked before any timing. The fused forward matches the PyTorch 
 
 ## Results
 
-Headline numbers come from `scripts/oscar_bench.sbatch`. Raw outputs are in `results/<date>-<gpu>-<job>/`. The tables below are from `results/2026-10-25-RTX-A5000-7953760/` (RTX A5000, driver 575.57.08, torch 2.8.0+cu128, commit `d6a37d7`). Times are medians of per-iteration CUDA events, in milliseconds.
+Headline numbers come from `scripts/oscar_bench.sbatch`. Raw outputs are in `results/<date>-<gpu>-<job>/`. The tables below are from `results/2026-10-26-RTX-A5000-7960100/` (RTX A5000, driver 575.57.08, torch 2.8.0+cu128, commit `35318f6`). Times are medians of per-iteration CUDA events, in milliseconds.
 
 Residual evaluation, `(u, Laplacian u)`:
 
 | backend | 1K | 16K | 64K |
 |---|---|---|---|
-| eager autograd | 2.157 | 2.137 | 6.833 |
-| forward Laplacian + `torch.compile` | 0.367 | 0.988 | 3.697 |
-| forward Laplacian + `torch.compile` (reduce-overhead) | 0.132 | 0.974 | 3.689 |
-| fused CUDA forward v2 | 0.075 | 0.127 | 0.539 |
-| fused CUDA forward v3 (TF32) | 0.076 | 0.184 | 0.685 |
+| eager autograd | 2.089 | 2.075 | 6.817 |
+| forward Laplacian + `torch.compile` | 0.359 | 0.985 | 3.695 |
+| forward Laplacian + `torch.compile` (reduce-overhead) | 0.134 | 0.975 | 3.692 |
+| fused CUDA forward v2 | 0.038 | 0.131 | 0.512 |
+| fused CUDA forward v3 (TF32) | 0.034 | 0.186 | 0.701 |
+| fused CUDA forward v4 (TF32, pipelined) | 0.033 | 0.123 | 0.482 |
 
 At 16K, eager launches 94 kernels per call, `torch.compile` 19, and the fused path 1.
 
@@ -70,19 +73,21 @@ Training step (forward, backward, Adam):
 
 | backend | 4K | 16K | 64K |
 |---|---|---|---|
-| eager autograd | 6.109 | 6.096 | 22.244 |
-| eager autograd, step captured as a CUDA graph | 1.870 | 5.272 | 21.871 |
-| forward Laplacian + `torch.compile` | 1.757 | 2.588 | 9.352 |
-| fused CUDA forward v2 + backward v2 | 0.962 | 0.971 | 3.595 |
-| fused CUDA forward v2 + backward v4 | 0.961 | 0.974 | 3.508 |
-| same, step captured as a CUDA graph | 0.280 | 0.880 | 3.564 |
+| eager autograd | 5.991 | 6.085 | 22.261 |
+| eager autograd, step captured as a CUDA graph | 1.887 | 5.290 | 21.922 |
+| forward Laplacian + `torch.compile` | 1.717 | 2.578 | 9.361 |
+| fused CUDA forward v2 + backward v2 | 0.947 | 0.954 | 3.622 |
+| fused CUDA forward v2 + backward v4 | 0.947 | 0.954 | 3.534 |
+| fused CUDA forward v2 + backward v6 | 0.951 | 0.956 | 3.300 |
+| same, step captured as a CUDA graph | 0.269 | 0.878 | 3.348 |
 
-Times vary between GPU models and between Slurm jobs on the same model. At 1K–4K the call is short enough that host CPU speed matters: the same kernel measured 23 µs and 45 µs of host time per call on two nodes. Compare rows within one results directory. The earlier run, `results/2026-10-24-RTX-A5000-7913538/`, is kept for reference.
+Times vary between GPU models and between Slurm jobs on the same model. At 1K–4K the call is short enough that host CPU speed matters. Before the parameter-pack lookup was cached, the same kernel measured 23 µs and 45 µs of host time per call on two nodes. After the change it measured 16–20 µs, against about 30 µs of kernel time. Compare rows within one results directory. Earlier runs are kept under `results/` for reference.
 
 Things that did not help:
 
 - Forward v0 was slower than eager at 64K. Its per-thread jet lives in local memory, and ncu reported 93% DRAM throughput.
-- Forward v3 (TF32) was slower than v2 at 16K and 64K, and its Laplacian error was about 1e3 times larger. On an A40, ncu showed 0.25 instructions issued per cycle against 0.62 for v2, with the tensor pipe active 15% of the time.
+- Forward v3 (TF32) was slower than v2 at 16K and 64K, and its Laplacian error was about 1e3 times larger. On an A40, ncu showed 0.25 instructions issued per cycle against 0.62 for v2, with the tensor pipe active 15% of the time. Forward v4 prefetches the weights with `cp.async`; that cut the `long_scoreboard` stall ratio from 2.97 to 1.23 and made TF32 faster than v2 at 16K–64K. The error is the same as v3, so v4 is opt-in (`fused_cuda_tf32_pipelined`).
+- With no shared-memory padding (leading dims 128/64), the TF32 kernel had 48.8M load bank conflicts and was 1.5× slower.
 - Backward v3 (SM-shared atomic rows) was slower than v2 on an RTX A5500. DRAM throughput dropped only from 46% to 41%.
 - Backward v2 reaches 2 blocks/SM, but its training step was no faster than v1 on the A40 or the A5500.
 - Backward v5 lowered the `mio_throttle` stall ratio from 1.65 to 1.45 on an A40, but the 64K training step stayed at about 2.76 ms, the same as v4.
