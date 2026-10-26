@@ -15,7 +15,7 @@ from fused_hoad import (
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--batch-size", type=int, default=65_536)
-    parser.add_argument("--versions", type=int, nargs="+", default=[0, 1])
+    parser.add_argument("--versions", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     args = parser.parse_args()
 
     torch.manual_seed(0)

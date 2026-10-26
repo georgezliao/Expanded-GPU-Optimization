@@ -29,7 +29,7 @@ def main() -> None:
             ref_u, ref_lap = forward_laplacian(model.double(), x.double())
             model.float()
             packed = pack_poisson_parameters(model)
-            for version in (2, 3):
+            for version in (2, 3, 4):
                 u, lap = fused_forward_laplacian(x, packed, version)
                 du = (u.double() - ref_u).abs().max().item()
                 dl = (lap.double() - ref_lap).abs().max().item()
