@@ -5,6 +5,8 @@ kernel. The backward pass is either one fused CUDA kernel (default) or a referen
 recomputes the jet in PyTorch from the packed parameters and differentiates that.
 """
 
+import weakref
+
 import torch
 from torch import Tensor, nn
 
@@ -93,12 +95,22 @@ def _recompute_backward(
 
 
 def _packed_parameters(model: nn.Module) -> Tensor:
-    """Differentiable pack when training; otherwise pack once per in-place weight update."""
-    if torch.is_grad_enabled() and any(p.requires_grad for p in model.parameters()):
+    """Differentiable pack when training; otherwise pack once per in-place weight update.
+
+    The parameter list is cached per model (checked through a weakref, so a recycled ``id``
+    can't return another model's parameters). Each call then only reads the version counters,
+    instead of walking the module tree twice.
+    """
+    model_ref = _cache.get("model")
+    if model_ref is None or model_ref() is not model:
+        _cache.clear()
+        _cache.update(model=weakref.ref(model), parameters=list(model.parameters()))
+    parameters = _cache["parameters"]
+    if torch.is_grad_enabled() and any(p.requires_grad for p in parameters):
         return pack_poisson_parameters(model, differentiable=True)
-    key = (id(model), tuple(p._version for p in model.parameters()))
-    if _cache.get("key") != key:
-        _cache.update(key=key, packed=pack_poisson_parameters(model))
+    versions = [p._version for p in parameters]
+    if versions != _cache.get("versions"):
+        _cache.update(versions=versions, packed=pack_poisson_parameters(model))
     return _cache["packed"]
 
 
