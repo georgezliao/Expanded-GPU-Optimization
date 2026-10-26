@@ -42,7 +42,7 @@ std::vector<torch::Tensor> fused_forward_laplacian_backward_cuda(
 std::vector<torch::Tensor> fused_forward_laplacian_backward(
     torch::Tensor coordinates, torch::Tensor parameters, torch::Tensor grad_output,
     torch::Tensor grad_laplacian, int64_t version) {
-  TORCH_CHECK(version >= 1 && version <= 3, "backward version must be 1, 2 or 3");
+  TORCH_CHECK(version >= 1 && version <= 4, "backward version must be 1, 2, 3 or 4");
   check_inputs(coordinates, parameters);
   for (const auto& grad : {grad_output, grad_laplacian}) {
     TORCH_CHECK(grad.is_cuda() && grad.is_contiguous() && grad.scalar_type() == torch::kFloat32,
@@ -62,6 +62,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
              "Gradients of the fused forward Laplacian w.r.t. parameters and coordinates (CUDA)",
              pybind11::arg("coordinates"), pybind11::arg("parameters"),
              pybind11::arg("grad_output"), pybind11::arg("grad_laplacian"),
-             pybind11::arg("version") = 2);
+             pybind11::arg("version") = 4);
 }
 

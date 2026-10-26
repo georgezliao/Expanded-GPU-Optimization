@@ -45,6 +45,7 @@ if extension_available():
     BACKENDS["fused_cuda_tf32"] = partial(fused_laplacian, version=3)
     BACKENDS["fused_cuda_bwd_v1"] = partial(fused_laplacian, backward="cuda_v1")
     BACKENDS["fused_cuda_bwd_v3"] = partial(fused_laplacian, backward="cuda_v3")
+    BACKENDS["fused_cuda_bwd_v2"] = partial(fused_laplacian, backward="cuda_v2")
     BACKENDS["fused_cuda_recompute"] = partial(fused_laplacian, backward="recompute")
     FIXED_CONTRACT_BACKENDS = (
         "fused_cuda_v0",
@@ -53,6 +54,7 @@ if extension_available():
         "fused_cuda_tf32",
         "fused_cuda_bwd_v1",
         "fused_cuda_bwd_v3",
+        "fused_cuda_bwd_v2",
         "fused_cuda_recompute",
     )
 
