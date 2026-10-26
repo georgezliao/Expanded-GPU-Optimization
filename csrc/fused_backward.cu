@@ -412,7 +412,9 @@ __device__ __forceinline__ int o_scratch(int layer, int component, int neuron, i
 
 // kSharedRows (v3): blocks on the same SM share one partials row and add into it with
 // atomicAdd (compiled to fire-and-forget RED). 84 rows fit in L2 where 168 private rows don't.
-template <bool kSharedRows>
+// kCompactScratch (v4): layer 0's J (= W0 columns) and L (= 0) are constants, so only its z_v
+// is stored; the backward rebuilds the rest from the parameters.
+template <bool kSharedRows, bool kCompactScratch>
 __global__ void __launch_bounds__(kThreads, 2)
 fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
                                 const float* __restrict__ params,
@@ -454,6 +456,14 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
   const int o0 = group * kONeurons;
   const int wo = (t / 16) * 4;  // weight-gradient 4x4 block
   const int wi = (t % 16) * 4;
+  auto z_load = [&](int layer, int component, int neuron) -> float {
+    if constexpr (kCompactScratch) {
+      if (layer == 0 && component > 0) {
+        return component == 3 ? 0.0f : __ldg(params + neuron * kInputs + component - 1);
+      }
+    }
+    return block_scratch[o_scratch(layer, component, neuron, lane)];
+  };
 
   for (int k = t; k < kSmallCount; k += kThreads) {
     small[k] = 0.0f;
@@ -490,9 +500,11 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
       const float w1 = __ldg(params + o * kInputs + 1);
       const float zv = w0 * s_x0[lane] + w1 * s_x1[lane] + __ldg(params + kLayer0Bias + o);
       block_scratch[o_scratch(0, 0, o, lane)] = zv;
-      block_scratch[o_scratch(0, 1, o, lane)] = w0;
-      block_scratch[o_scratch(0, 2, o, lane)] = w1;
-      block_scratch[o_scratch(0, 3, o, lane)] = 0.0f;
+      if constexpr (!kCompactScratch) {
+        block_scratch[o_scratch(0, 1, o, lane)] = w0;
+        block_scratch[o_scratch(0, 2, o, lane)] = w1;
+        block_scratch[o_scratch(0, 3, o, lane)] = 0.0f;
+      }
       const int h = o * kOStride + lane;
       tanh_forward(zv, w0, w1, 0.0f, hid[h], hid[kOPlane + h], hid[2 * kOPlane + h],
                    hid[3 * kOPlane + h]);
@@ -574,15 +586,11 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
       for (int k = 0; k < kONeurons; ++k) {
         const int o = o0 + k;
         const int a = o * kOStride + lane;
-        tanh_backward(block_scratch[o_scratch(layer, 0, o, lane)],
-                      block_scratch[o_scratch(layer, 1, o, lane)],
-                      block_scratch[o_scratch(layer, 2, o, lane)],
-                      block_scratch[o_scratch(layer, 3, o, lane)], adj[a], adj[kOPlane + a],
+        tanh_backward(z_load(layer, 0, o), z_load(layer, 1, o), z_load(layer, 2, o),
+                      z_load(layer, 3, o), adj[a], adj[kOPlane + a],
                       adj[2 * kOPlane + a], adj[3 * kOPlane + a]);
-        tanh_forward(block_scratch[o_scratch(layer - 1, 0, o, lane)],
-                     block_scratch[o_scratch(layer - 1, 1, o, lane)],
-                     block_scratch[o_scratch(layer - 1, 2, o, lane)],
-                     block_scratch[o_scratch(layer - 1, 3, o, lane)], hid[a], hid[kOPlane + a],
+        tanh_forward(z_load(layer - 1, 0, o), z_load(layer - 1, 1, o), z_load(layer - 1, 2, o),
+                     z_load(layer - 1, 3, o), hid[a], hid[kOPlane + a],
                      hid[2 * kOPlane + a], hid[3 * kOPlane + a]);
       }
       __syncthreads();
@@ -675,10 +683,8 @@ fused_backward_occupancy_kernel(const float* __restrict__ coordinates,
     for (int k = 0; k < kONeurons; ++k) {
       const int o = o0 + k;
       const int a = o * kOStride + lane;
-      tanh_backward(block_scratch[o_scratch(0, 0, o, lane)],
-                    block_scratch[o_scratch(0, 1, o, lane)],
-                    block_scratch[o_scratch(0, 2, o, lane)],
-                    block_scratch[o_scratch(0, 3, o, lane)], adj[a], adj[kOPlane + a],
+      tanh_backward(z_load(0, 0, o), z_load(0, 1, o), z_load(0, 2, o), z_load(0, 3, o), adj[a],
+                    adj[kOPlane + a],
                     adj[2 * kOPlane + a], adj[3 * kOPlane + a]);
     }
     __syncthreads();
@@ -786,8 +792,9 @@ std::vector<torch::Tensor> fused_forward_laplacian_backward_cuda(torch::Tensor c
   auto partials = shared_rows ? torch::zeros({rows, kRowStride}, options)
                               : torch::empty({rows, kRowStride}, options);
   auto scratch = torch::empty({static_cast<int64_t>(blocks) * kOScratchPerBlock}, options);
-  auto kernel = shared_rows ? fused_backward_occupancy_kernel<true>
-                            : fused_backward_occupancy_kernel<false>;
+  auto kernel = shared_rows        ? fused_backward_occupancy_kernel<true, false>
+                : version == 4 ? fused_backward_occupancy_kernel<false, true>
+                               : fused_backward_occupancy_kernel<false, false>;
   kernel<<<blocks, kThreads, kOSharedBytes, stream>>>(
       coordinates.data_ptr<float>(), parameters.data_ptr<float>(), hidden_t.data_ptr<float>(),
       grad_output.data_ptr<float>(), grad_laplacian.data_ptr<float>(),
