@@ -20,6 +20,7 @@ _TRAINABLE = (
     "fused_cuda_recompute",
     "fused_cuda_bwd_v1",
     "fused_cuda_bwd_v3",
+    "fused_cuda_bwd_v2",
     "fused_cuda",
 )
 # torch.compile manages its own graphs (reduce-overhead = CUDA Graph trees over forward and
