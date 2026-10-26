@@ -4,8 +4,10 @@
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <cuda_runtime.h>
+#include <cuda_pipeline.h>
 #include <mma.h>
 
+#include <cstdint>
 #include <vector>
 
 #include "mlp_abi.cuh"
@@ -26,6 +28,8 @@
 //     register-tiled GEMM against the layer's weights staged in shared memory.
 // v3: 32-point tiles with the hidden 64x64 GEMMs on tensor cores (WMMA m16n16k8, TF32
 //     inputs, FP32 accumulate); the tanh-jet epilogue stays FP32. Needs sm_80+.
+// v4: v3 without the separate Z buffer (accumulators go back into H), so there is room to
+//     double-buffer each layer's weights + bias with cp.async while the previous GEMM runs.
 // v2: v1 with 2 points per lane (64-point tiles): float2 jet loads halve shared-memory
 //     instructions per FMA, at the cost of 80 KB shared memory per block.
 
@@ -409,6 +413,144 @@ fused_forward_laplacian_tf32_kernel(const float* __restrict__ coordinates,
 #endif
 }
 
+
+// ---- v4: pipelined TF32 ----
+constexpr int kPwFloats = kHidden * kTcLdw + kHidden;  // one weight buffer + its bias
+constexpr size_t kPipeSharedBytes = (2 * kPwFloats + kHidden * kTcLdh) * sizeof(float);
+static_assert((kHidden * kTcLdw) % 4 == 0 && kPwFloats % 4 == 0, "cp.async needs 16-byte steps");
+
+// Copy hidden layer `layer`'s weights (row-major, padded to kTcLdw) and bias into `buffer`
+// with 16-byte cp.async transfers; one commit group per call.
+__device__ __forceinline__ void prefetch_layer(float* buffer, const float* params, int layer) {
+  const float* weight = params + kHiddenBase + layer * kHiddenStride;
+  const float* bias = weight + kHidden * kHidden;
+  for (int chunk = threadIdx.x; chunk < kHidden * kHidden / 4; chunk += blockDim.x) {
+    const int row = chunk / (kHidden / 4);
+    const int column = (chunk % (kHidden / 4)) * 4;
+    __pipeline_memcpy_async(buffer + row * kTcLdw + column, weight + row * kHidden + column, 16);
+  }
+  for (int chunk = threadIdx.x; chunk < kHidden / 4; chunk += blockDim.x) {
+    __pipeline_memcpy_async(buffer + kHidden * kTcLdw + chunk * 4, bias + chunk * 4, 16);
+  }
+  __pipeline_commit();
+}
+
+__global__ void __launch_bounds__(256)
+fused_forward_laplacian_tf32_pipelined_kernel(const float* __restrict__ coordinates,
+                                              const float* __restrict__ params,
+                                              float* __restrict__ output,
+                                              float* __restrict__ laplacian,
+                                              int64_t batch) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+  namespace wmma = nvcuda::wmma;
+  extern __shared__ float shared[];
+  float* buffers[2] = {shared, shared + kPwFloats};
+  float* h_s = shared + 2 * kPwFloats;  // [neuron][component * 32 + point], ld kTcLdh
+
+  const int t = threadIdx.x;
+  const int lane = t % kTcTile;
+  const int warp = t / kTcTile;
+  const int o0 = warp * 8;
+  const int64_t point = static_cast<int64_t>(blockIdx.x) * kTcTile + lane;
+  const bool active = point < batch;
+
+  prefetch_layer(buffers[0], params, 0);  // overlaps with layer 0 below
+
+  const float x0 = active ? coordinates[2 * point] : 0.0f;
+  const float x1 = active ? coordinates[2 * point + 1] : 0.0f;
+  auto store_jet = [&](int o, float v, float j0, float j1, float l) {
+    float* row = h_s + o * kTcLdh;
+    row[lane] = v;
+    row[kTcTile + lane] = j0;
+    row[2 * kTcTile + lane] = j1;
+    row[3 * kTcTile + lane] = l;
+  };
+#pragma unroll
+  for (int k = 0; k < 8; ++k) {
+    const int o = o0 + k;
+    const float w0 = __ldg(params + o * kInputs);
+    const float w1 = __ldg(params + o * kInputs + 1);
+    const float zv = w0 * x0 + w1 * x1 + __ldg(params + kLayer0Bias + o);
+    const float a = tanhf(zv);
+    const float s = 1.0f - a * a;
+    store_jet(o, a, s * w0, s * w1, -2.0f * a * s * (w0 * w0 + w1 * w1));
+  }
+
+  for (int layer = 0; layer < kHiddenLayers - 1; ++layer) {
+    __syncthreads();  // H written by the previous epilogue; the buffer about to be refilled is free
+    const bool has_next = layer + 1 < kHiddenLayers - 1;
+    if (has_next) {
+      prefetch_layer(buffers[(layer + 1) % 2], params, layer + 1);
+      __pipeline_wait_prior(1);  // this layer's group is done; the next one may be in flight
+    } else {
+      __pipeline_wait_prior(0);
+    }
+    __syncthreads();  // every thread's copies for this layer are visible
+
+    const float* w_s = buffers[layer % 2];
+    const float* bias_s = w_s + kHidden * kTcLdw;
+    wmma::fragment<wmma::accumulator, 16, 16, 8, float> acc[4];
+#pragma unroll
+    for (int r = 0; r < 4; ++r) {
+      wmma::fill_fragment(acc[r], 0.0f);
+    }
+    const int column = warp * 16;
+#pragma unroll
+    for (int k = 0; k < kHidden; k += 8) {
+      wmma::fragment<wmma::matrix_b, 16, 16, 8, wmma::precision::tf32, wmma::row_major> b;
+      wmma::load_matrix_sync(b, h_s + k * kTcLdh + column, kTcLdh);
+#pragma unroll
+      for (int e = 0; e < b.num_elements; ++e) {
+        b.x[e] = wmma::__float_to_tf32(b.x[e]);
+      }
+#pragma unroll
+      for (int r = 0; r < 4; ++r) {
+        wmma::fragment<wmma::matrix_a, 16, 16, 8, wmma::precision::tf32, wmma::row_major> a;
+        wmma::load_matrix_sync(a, w_s + (r * 16) * kTcLdw + k, kTcLdw);
+#pragma unroll
+        for (int e = 0; e < a.num_elements; ++e) {
+          a.x[e] = wmma::__float_to_tf32(a.x[e]);
+        }
+        wmma::mma_sync(acc[r], a, b, acc[r]);
+      }
+    }
+    __syncthreads();  // every warp has finished reading H
+#pragma unroll
+    for (int r = 0; r < 4; ++r) {
+      wmma::store_matrix_sync(h_s + (r * 16) * kTcLdh + column, acc[r], kTcLdh,
+                              wmma::mem_row_major);
+    }
+    __syncthreads();  // H now holds Z
+
+#pragma unroll
+    for (int k = 0; k < 8; ++k) {
+      const int o = o0 + k;
+      const float* z = h_s + o * kTcLdh;
+      const float zv = z[lane] + bias_s[o];
+      const float zj0 = z[kTcTile + lane];
+      const float zj1 = z[2 * kTcTile + lane];
+      const float zl = z[3 * kTcTile + lane];
+      const float a = tanhf(zv);
+      const float s = 1.0f - a * a;
+      store_jet(o, a, s * zj0, s * zj1, s * zl - 2.0f * a * s * (zj0 * zj0 + zj1 * zj1));
+    }
+  }
+  __syncthreads();
+
+  if (t < kTcTile && active) {
+    const float* w_out = params + kOutputBase;
+    float u = __ldg(w_out + kHidden), lap = 0.0f;
+    for (int i = 0; i < kHidden; ++i) {
+      const float w = __ldg(w_out + i);
+      u = fmaf(w, h_s[i * kTcLdh + lane], u);
+      lap = fmaf(w, h_s[i * kTcLdh + 3 * kTcTile + lane], lap);
+    }
+    output[point] = u;
+    laplacian[point] = lap;
+  }
+#endif
+}
+
 }  // namespace
 
 std::vector<torch::Tensor> fused_forward_laplacian_cuda(torch::Tensor coordinates,
@@ -432,6 +574,18 @@ std::vector<torch::Tensor> fused_forward_laplacian_cuda(torch::Tensor coordinate
     launch_tiled<1>(coordinates, parameters, output, laplacian, batch, stream);
   } else if (version == 2) {
     launch_tiled<2>(coordinates, parameters, output, laplacian, batch, stream);
+  } else if (version == 4) {
+    const auto* props = at::cuda::getCurrentDeviceProperties();
+    TORCH_CHECK(props->major >= 8, "forward v4 (TF32 tensor cores) needs sm_80 or newer");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(parameters.data_ptr<float>()) % 16 == 0,
+                "parameters must be 16-byte aligned for forward v4 (cp.async)");
+    C10_CUDA_CHECK(cudaFuncSetAttribute(fused_forward_laplacian_tf32_pipelined_kernel,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        static_cast<int>(kPipeSharedBytes)));
+    const int blocks = static_cast<int>((batch + kTcTile - 1) / kTcTile);
+    fused_forward_laplacian_tf32_pipelined_kernel<<<blocks, 256, kPipeSharedBytes, stream>>>(
+        coordinates.data_ptr<float>(), parameters.data_ptr<float>(), output.data_ptr<float>(),
+        laplacian.data_ptr<float>(), batch);
   } else {
     const auto* props = at::cuda::getCurrentDeviceProperties();
     TORCH_CHECK(props->major >= 8, "forward v3 (TF32 tensor cores) needs sm_80 or newer");
