@@ -1,0 +1,18 @@
+gpu=NVIDIA RTX A5000 sm_86 64SMs driver=575.57.08 torch=2.8.0+cu128 cuda=12.8 python=3.12.15
+                               backend  host launches  gpu kernels
+                                 eager             94           97
+                       eager_cudagraph              1           98
+                                  func            118          123
+                     forward_laplacian             59           59
+           forward_laplacian_cudagraph              1           60
+            forward_laplacian_compiled             19           19
+  forward_laplacian_compiled_cudagraph              2           20
+                         fused_cuda_v0              1            1
+                         fused_cuda_v1              1            1
+                            fused_cuda              1            1
+                       fused_cuda_tf32              1            1
+                     fused_cuda_bwd_v1              1            1
+                     fused_cuda_bwd_v3              1            1
+                     fused_cuda_bwd_v5              1            1
+                     fused_cuda_bwd_v2              1            1
+                  fused_cuda_recompute              1            1
