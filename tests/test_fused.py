@@ -266,19 +266,24 @@ def test_cuda_graph_training_step_matches_eager_step() -> None:
 # max |error| / max |reference| over the batch: 64K points gave 6.6e-4 (Laplacian) at default
 # init and 2.3e-3 with weights x3; a single point with weights x3 gave 1.1e-2.
 TF32_TOLERANCE = {1.0: 5e-3, 3.0: 2e-2}  # by weight scale
+
+
 @pytest.mark.skipif(
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8,
     reason="TF32 tensor cores need sm_80+",
 )
+@pytest.mark.parametrize("version", [3, 4])
 @pytest.mark.parametrize("weight_scale", [1.0, 3.0])
 @pytest.mark.parametrize("batch", [1, 31, 32, 33, 4_096])
-def test_tf32_forward_within_stated_tolerance(batch: int, weight_scale: float) -> None:
+def test_tf32_forward_within_stated_tolerance(
+    batch: int, weight_scale: float, version: int
+) -> None:
     model = _model()
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.mul_(weight_scale)
     coordinates = torch.empty(batch, 2, device="cuda").uniform_(-1.0, 1.0)
     expected_u, expected_lap = forward_laplacian(model.double(), coordinates.double())
-    u, lap = fused_forward_laplacian(coordinates, pack_poisson_parameters(model.float()), 3)
+    u, lap = fused_forward_laplacian(coordinates, pack_poisson_parameters(model.float()), version)
     _assert_scaled_close(u.double(), expected_u, TF32_TOLERANCE[weight_scale])
     _assert_scaled_close(lap.double(), expected_lap, TF32_TOLERANCE[weight_scale])
