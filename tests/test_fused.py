@@ -272,7 +272,7 @@ TF32_TOLERANCE = {1.0: 5e-3, 3.0: 2e-2}  # by weight scale
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8,
     reason="TF32 tensor cores need sm_80+",
 )
-@pytest.mark.parametrize("version", [3, 4])
+@pytest.mark.parametrize("version", [3, 4, 5])
 @pytest.mark.parametrize("weight_scale", [1.0, 3.0])
 @pytest.mark.parametrize("batch", [1, 31, 32, 33, 4_096])
 def test_tf32_forward_within_stated_tolerance(
