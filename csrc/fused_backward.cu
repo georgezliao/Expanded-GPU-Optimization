@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 #include "mlp_abi.cuh"
@@ -869,11 +870,19 @@ std::vector<torch::Tensor> fused_forward_laplacian_backward_cuda(torch::Tensor c
 
   const auto stream = at::cuda::getCurrentCUDAStream();
   const int sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+  // FUSED_HOAD_BWD_BLOCKS caps the persistent grid (experiment knob, read per call). The
+  // grid size sets how tiles are split into per-block partial sums, i.e. summation order.
+  const char* blocks_env = std::getenv("FUSED_HOAD_BWD_BLOCKS");
+  const int64_t block_cap = blocks_env ? std::max<int64_t>(1, std::atoll(blocks_env)) : 0;
+  auto grid_size = [&](int64_t tiles, int64_t natural) {
+    const int64_t capped = block_cap > 0 ? block_cap : natural;
+    return static_cast<int>(std::min<int64_t>(tiles, capped));
+  };
   auto options = parameters.options();
 
   if (version == 1) {
     const int64_t tiles = (batch + kTile - 1) / kTile;
-    const int blocks = static_cast<int>(std::min<int64_t>(tiles, sms));
+    const int blocks = grid_size(tiles, sms);
     auto partials = torch::empty({blocks, kParameterCount}, options);
     auto scratch = torch::empty({static_cast<int64_t>(blocks) * kScratchPerBlock}, options);
     // Set once per device: it is not a stream operation, so it stays out of CUDA graphs.
@@ -903,7 +912,7 @@ std::vector<torch::Tensor> fused_forward_laplacian_backward_cuda(torch::Tensor c
                       .transpose(1, 2)
                       .contiguous();
   const int64_t tiles = (batch + kOTile - 1) / kOTile;
-  const int blocks = static_cast<int>(std::min<int64_t>(tiles, 2 * sms));
+  const int blocks = grid_size(tiles, 2 * static_cast<int64_t>(sms));
   const bool shared_rows = version == 3;
   const int rows = shared_rows ? std::min(blocks, sms) : blocks;
   auto partials = shared_rows ? torch::zeros({rows, kRowStride}, options)
