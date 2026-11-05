@@ -1,32 +1,26 @@
-# Fused CUDA Accelerators for Higher-Order Automatic Differentiation
+# Fused CUDA Kernels for Higher-Order Autodiff
 
-## Optimizing higher-order automatic differentiation (AD) workloads by eliminating graph traversal overhead and tensor materialization bottlenecks using custom CUDA kernel fusion.
+Computes the input Laplacian of a fixed MLP in one fused CUDA kernel, so PINN residuals and training steps don't have to go through PyTorch's autograd graph.
 
-### Overview:
-Higher-order automatic differentiation in modern deep learning frameworks frequently suffers from severe performance degradation. While frameworks like PyTorch excel at first-order gradients, computing higher-order derivatives introduces repeated computational graph traversals, excessive tensor materialization, and severe CUDA kernel-launch overhead.
-This project profiles these specific bottlenecks using Nvidia Nsight Systems and implements a highly optimized, fused CUDA residual kernel that bypasses framework-level abstractions to dramatically accelerate residual evaluation while preserving strict numerical accuracy.
+On an RTX A5000 at 16K points, a residual evaluation takes 0.131 ms, compared with 2.075 ms for eager autograd and 0.975 ms for a forward Laplacian under `torch.compile`. It uses 1 kernel launch per call where eager uses 94. At 64K points, a full training step takes 3.300 ms instead of 22.261 ms. The full tables are under [Results](#results), along with the kernel designs that didn't help.
 
-### Performance Bottlenecks Identified (Nsight Systems)
+The kernels are written for one architecture, the tanh MLP described under [Method](#method), so this isn't a general speedup for arbitrary PyTorch models.
 
-• Repeated Graph Traversal: Framework overhead from recursively building and walking execution graphs for secondary and tertiary gradients.
-• Tensor Materialization: Massive memory bandwidth saturation caused by allocating and writing intermediate, short-lived tensors to Global Memory (VRAM).
-• Kernel-Launch Overhead: A high volume of small, sequential kernel launches that leave the GPU execution pipelines starved and latency-bound.
+## The problem
 
-### Solution
+PINNs need derivatives of a network's output with respect to its inputs, often second order or higher. Nsight Systems profiles of the PyTorch pipeline point to three costs:
 
-To resolve these inefficiencies, this project, for a fixed MLP, replaces the native PyTorch higher-order AD pipeline with a custom C++/CUDA implementation:
-• Kernel Fusion: Combines elementwise operations and residual evaluations into a single monolithic CUDA kernel, keeping intermediate data entirely within high-speed GPU registers and Shared Memory.
-• Memory Optimization: Reduces redundant VRAM read/write cycles, shifting the workload from a memory-bandwidth-bound state to a compute-bound state.
-• PyTorch C++ Extension: Exposes the optimized CUDA backend seamlessly to Python using torch.utils.cpp_extension, allowing it to drop directly into existing PyTorch training and inference scripts.
+- **Graph traversal:** the framework builds and walks execution graphs for each higher-order derivative.
+- **Tensor materialization:** short-lived intermediate tensors are allocated and written to VRAM, which saturates memory bandwidth.
+- **Kernel launches:** many small sequential kernels leave the GPU waiting on launches.
 
-### Applications:
+## The approach
 
-1. Physics-Informed Neural Networks (PINNs):
-To enforce a PDE like the Navier-Stokes or Schrödinger equation, they must compute second, third, or fourth-order derivatives (\[u_{xx}\], \[u_{tttt}\]) of the network’s outputs with respect to the input coordinates. Doing this via native torch.autograd.grad(..., create_graph=True) creates a massive, deeply nested computational graph. It causes severe tensor materialization (allocating VRAM for intermediate derivatives at every layer) and floods the GPU with tiny elementwise kernel launches. Academic labs and industrial groups (like NVIDIA’s Modulus team) frequently write custom CUDA extensions or use Triton to fuse the final layers of the network directly with the PDE residual evaluation.
-2. Modern Compiler Framework Teams (PyTorch Inductor & JAX/XLA):
-If you look at the engineering blogs behind torch.compile, their primary goal is automating what you did manually. PyTorch Inductor uses AOTAutograd to trace execution graphs, isolate elementwise operators, and generate fused Triton kernels to eliminate the exact VRAM round-trips and launch overhead you identified.  JAX was built explicitly because PyTorch's eager mode struggled with higher-order differentiation. JAX converts functional code into intermediate expressions (Jaxprs) and hands them to the XLA compiler, which aggressively performs vertical and horizontal kernel fusion. Even then, JAX developers still write custom C++/CUDA loops when XLA fails to optimally fuse deeply recursive higher-order graphs.
-3. Quantitative Finance & Risk Management Engineers
-Computing "Speed" or "Gamma" requires evaluating second and third-order derivatives of a pricing model or a neural network approximation. • High-frequency trading (HFT) firms and quantitative desks at major banks write custom CUDA architectures to compute these higher-order Greeks in real-time. They cannot tolerate framework graph-traversal latencies, making your exact approach (C++ extensions, registers, and Shared Memory optimization) standard practice for production code.
+For a fixed MLP, a custom C++/CUDA implementation replaces the higher-order autograd pipeline:
+
+- **Kernel fusion:** elementwise operations and the residual evaluation run in a single kernel, which keeps intermediate data in registers and shared memory.
+- **Fewer VRAM reads and writes:** this moves the workload from memory-bound toward compute-bound.
+- **PyTorch extension:** `torch.utils.cpp_extension` exposes the kernels to Python, so they can be called from PyTorch training and inference scripts.
 
 ## Method
 
