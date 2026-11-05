@@ -93,6 +93,21 @@ Things that did not help:
 - Backward v5 lowered the `mio_throttle` stall ratio from 1.65 to 1.45 on an A40, but the 64K training step stayed at about 2.76 ms, the same as v4.
 - `torch.func` (`vmap(jacfwd(jacrev))`) was slower than eager at every batch size tested.
 
+## Open questions
+
+Results that are still unexplained or need another experiment:
+
+- ncu and the step benchmark disagree on the small backward changes. On an A40, v4 showed the same 2.62 ms as v2 in ncu but a 2.6% faster 64K step, while v6 was 11.6% faster than v4 in ncu and about 3% faster per step. The step also contains the forward kernel, packing, autograd and Adam, which accounts for only part of this. ncu's clock control may also matter, but that hasn't been tested.
+- Backward v2 raised achieved occupancy from about 17% to about 30% on the A40, and DRAM throughput rose from 23% to 61% in a separate ncu run. Backward v3 reduced that DRAM traffic only slightly, so the per-tile weight-gradient updates are not its main source. The remaining global loads have not been attributed with source counters.
+- Backward v5 lowered `mio_throttle`, but `long_scoreboard` rose and the step did not change. It may have moved the stall from shared-memory instructions to L1 weight loads.
+- The `wait` stall in the TF32 kernels barely changed between forward v3 and v4 (2.41 to 2.27). The chained `mma_sync` calls are the suspected cause. Bank conflicts also did not change.
+- Final PINN error depends on the GPU model. Reruns on one node were bit-identical, and a rerun on another A5500 matched to every printed digit. With the same seed and code, fused seed 0 ended at 1.97e-2 on an A5500 and 3.33e-3 in a job whose GPU was not recorded. Summation order in the backward grid is one candidate.
+- One or two seeds can end much worse than the rest. Over 8 seeds on an A40, eager had no final relative L2 above 1e-2, while `torch.compile` and the fused path had one each, at different seeds. Eight seeds cannot separate the backends. The cause of the bad seeds is not known.
+- Host-side time varies between nodes. Two A40 nodes measured 0.80 ms and 1.08 ms for the same 16K backward v4 step.
+- The PyTorch forward Laplacian trains slower than eager at 64K although its forward is faster. Its backward has not been profiled.
+
+Directions to try next: build a roofline for these kernels, including a shared-memory roofline, since shared-memory bandwidth limited several versions. Test the kernel design on a higher-order operator such as the biharmonic, and on a PDE harder than this Poisson problem. Find what prevents `torch.compile` from fusing below 19 kernels. Check whether gradients stay bit-identical when only the backward block count changes.
+
 ## Repository layout
 
 ```text
@@ -128,3 +143,35 @@ python -m benchmarks.train_poisson --cuda-graph         # end-to-end PINN: wall 
 For a quick CPU check of the PyTorch backends, pass `--device cpu --batch-sizes 32 --warmup 1 --iterations 2` to `benchmark_poisson`.
 
 On a Slurm cluster, `sbatch scripts/oscar_bench.sbatch` builds the extension, runs the tests and all benchmarks, and writes the outputs to `results/`.
+
+## References
+
+Forward-mode and high-order derivatives:
+
+- Li et al., [Forward Laplacian: A New Computational Framework for Neural Network-based Variational Monte Carlo](https://arxiv.org/abs/2307.08214), 2023. [folx](https://github.com/netket/folx) is a JAX implementation of this approach.
+- Shi, Hu, Lin, Kawaguchi, [Stochastic Taylor Derivative Estimator](https://arxiv.org/abs/2412.00088), 2024. It uses Taylor-mode AD with random tangents for arbitrary differential operators; the forward Laplacian computes one such operator exactly.
+- [Hutchinson Trace Estimation for High-Dimensional and High-Order Physics-Informed Neural Networks](https://arxiv.org/abs/2312.14499)
+- [Derivative Computation in PINNs: Automatic Differentiation, Finite Differences and Beyond](https://arxiv.org/abs/2608.11020)
+- [Verified residual-specific explicit derivative kernels for physics-informed learning and discretized PDE adjoints](https://arxiv.org/abs/2606.29702)
+
+PINN training:
+
+- Wang, Teng, Perdikaris, [Understanding and mitigating gradient pathologies in physics-informed neural networks](https://arxiv.org/abs/2001.04536), 2020.
+- [Mitigating Gradient Pathology in PINNs through Aligned Constraint](https://arxiv.org/abs/2605.25001), 2026.
+
+GPU kernels and profiling:
+
+- [Optimization of Tensor-product Operations in Nekbone on GPUs](https://arxiv.org/abs/2005.13425) proposes a shared-memory roofline.
+- [Acceleration of Tensor-Product Operations with Tensor Cores](https://arxiv.org/abs/2407.09621)
+- [Accelerating HPC Applications with NVIDIA Nsight Compute Roofline Analysis](https://developer.nvidia.com/blog/accelerating-hpc-applications-with-nsight-compute-roofline-analysis)
+- [Roofline on NVIDIA GPUs hackathon materials](https://nersc.gov/roofline-on-nvidia-gpus-hackathon) (NERSC, 2020)
+
+Talks:
+
+- [Roofline and NVIDIA Ampere GPU Architecture Analysis](https://www.youtube.com/watch?v=VtkxhygfNsY)
+- [GTC 2020 roofline session](https://developer.nvidia.com/gtc/2020/video/s21565-vid) (NERSC and Berkeley Lab)
+- [Nsight Compute videos](https://developer.nvidia.com/nsight-compute-videos)
+- [Shared Memory Kernel Optimization](https://www.youtube.com/watch?v=3bko4iL5MJk)
+- [Shared Memory Atomics and Dynamic Allocation in CUDA](https://www.youtube.com/watch?v=Bwv5J7dHYjU)
+- [CUDA Crash Course: Optimizing Histogram Kernels](https://www.youtube.com/watch?v=v4DGiuU53h8)
+- [Stochastic Taylor Derivative Estimator](https://www.youtube.com/watch?v=5zYRENUOyW4)
