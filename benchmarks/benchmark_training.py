@@ -1,6 +1,9 @@
 """Benchmark one PINN training step (forward + backward + Adam) per trainable backend.
 
 ``--cuda-graph`` also times each backend with the whole step captured as one CUDA Graph.
+Peak memory is the allocator peak during the timed steps minus what was allocated right
+after warmup (weights, grads, Adam state and any CUDA-graph pool are in that baseline, so a
+captured step's own buffers don't show up in this column).
 """
 
 import argparse
@@ -30,7 +33,9 @@ _TRAINABLE = (
 _GRAPHABLE = tuple(name for name in _TRAINABLE if "compiled" not in name)
 
 
-def time_step(name: str, batch_size: int, warmup: int, iterations: int, graph: bool) -> Timing:
+def time_step(
+    name: str, batch_size: int, warmup: int, iterations: int, graph: bool
+) -> tuple[Timing, float]:
     torch.manual_seed(0)
     model = build_mlp(DEFAULT_POISSON_MLP).cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, capturable=graph)
@@ -53,7 +58,11 @@ def time_step(name: str, batch_size: int, warmup: int, iterations: int, graph: b
 
     for _ in range(warmup):
         step()
-    return time_calls(step, iterations, torch.device("cuda"))
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    baseline = torch.cuda.memory_allocated()
+    timing = time_calls(step, iterations, torch.device("cuda"))
+    return timing, (torch.cuda.max_memory_allocated() - baseline) / 1024**2
 
 
 def main() -> None:
@@ -69,17 +78,18 @@ def main() -> None:
     print(describe())
     print(
         f"{'backend':>38} {'graph':>6} {'batch':>10} {'mean ms':>10} {'median ms':>10} "
-        f"{'p90 ms':>10}"
+        f"{'p90 ms':>10} {'peak MiB':>10}"
     )
     print("(mean: wall clock over the loop; median/p90: per-step CUDA events)")
     for name in args.backends:
         modes = (False, True) if args.cuda_graph and name in _GRAPHABLE else (False,)
         for graph in modes:
             for batch_size in args.batch_sizes:
-                timing = time_step(name, batch_size, args.warmup, args.iterations, graph)
+                timing, peak = time_step(name, batch_size, args.warmup, args.iterations, graph)
                 print(
                     f"{name:>38} {'yes' if graph else 'no':>6} {batch_size:>10,d} "
-                    f"{timing.mean_ms:>10.3f} {timing.median_ms:>10.3f} {timing.p90_ms:>10.3f}"
+                    f"{timing.mean_ms:>10.3f} {timing.median_ms:>10.3f} {timing.p90_ms:>10.3f} "
+                    f"{peak:>10.1f}"
                 )
 
 
