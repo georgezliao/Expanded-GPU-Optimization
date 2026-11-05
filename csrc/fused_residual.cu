@@ -31,6 +31,7 @@
 //     inputs, FP32 accumulate); the tanh-jet epilogue stays FP32. Needs sm_80+.
 // v4: v3 without the separate Z buffer (accumulators go back into H), so there is room to
 //     double-buffer each layer's weights + bias with cp.async while the previous GEMM runs.
+// v5: v4 with 16 warps per block instead of 8.
 // v2: v1 with 2 points per lane (64-point tiles): float2 jet loads halve shared-memory
 //     instructions per FMA, at the cost of 80 KB shared memory per block.
 
@@ -444,8 +445,10 @@ __device__ __forceinline__ void prefetch_layer(float* buffer, const float* param
   __pipeline_commit();
 }
 
-template <int Ldh, int Ldw>
-__global__ void __launch_bounds__(256)
+// Warps = 8: each warp runs 4 row tiles of its column strip. Warps = 16 (v5): two warps
+// share a strip with 2 row tiles each, so more independent mma chains can overlap.
+template <int Ldh, int Ldw, int Warps>
+__global__ void __launch_bounds__(Warps * kTcTile)
 fused_forward_laplacian_tf32_pipelined_kernel(const float* __restrict__ coordinates,
                                               const float* __restrict__ params,
                                               float* __restrict__ output,
@@ -461,7 +464,9 @@ fused_forward_laplacian_tf32_pipelined_kernel(const float* __restrict__ coordina
   const int t = threadIdx.x;
   const int lane = t % kTcTile;
   const int warp = t / kTcTile;
-  const int o0 = warp * 8;
+  constexpr int kNeurons = kHidden / Warps;
+  constexpr int kRowTiles = 32 / Warps;
+  const int o0 = warp * kNeurons;
   const int64_t point = static_cast<int64_t>(blockIdx.x) * kTcTile + lane;
   const bool active = point < batch;
 
@@ -477,7 +482,7 @@ fused_forward_laplacian_tf32_pipelined_kernel(const float* __restrict__ coordina
     row[3 * kTcTile + lane] = l;
   };
 #pragma unroll
-  for (int k = 0; k < 8; ++k) {
+  for (int k = 0; k < kNeurons; ++k) {
     const int o = o0 + k;
     const float w0 = __ldg(params + o * kInputs);
     const float w1 = __ldg(params + o * kInputs + 1);
@@ -500,12 +505,13 @@ fused_forward_laplacian_tf32_pipelined_kernel(const float* __restrict__ coordina
 
     const float* w_s = buffers[layer % 2];
     const float* bias_s = w_s + kHidden * Ldw;
-    wmma::fragment<wmma::accumulator, 16, 16, 8, float> acc[4];
+    wmma::fragment<wmma::accumulator, 16, 16, 8, float> acc[kRowTiles];
 #pragma unroll
-    for (int r = 0; r < 4; ++r) {
+    for (int r = 0; r < kRowTiles; ++r) {
       wmma::fill_fragment(acc[r], 0.0f);
     }
-    const int column = warp * 16;
+    const int column = (warp / (Warps / 8)) * 16;
+    const int first_row = (warp % (Warps / 8)) * kRowTiles;
 #pragma unroll
     for (int k = 0; k < kHidden; k += 8) {
       wmma::fragment<wmma::matrix_b, 16, 16, 8, wmma::precision::tf32, wmma::row_major> b;
@@ -515,9 +521,9 @@ fused_forward_laplacian_tf32_pipelined_kernel(const float* __restrict__ coordina
         b.x[e] = wmma::__float_to_tf32(b.x[e]);
       }
 #pragma unroll
-      for (int r = 0; r < 4; ++r) {
+      for (int r = 0; r < kRowTiles; ++r) {
         wmma::fragment<wmma::matrix_a, 16, 16, 8, wmma::precision::tf32, wmma::row_major> a;
-        wmma::load_matrix_sync(a, w_s + (r * 16) * Ldw + k, Ldw);
+        wmma::load_matrix_sync(a, w_s + ((first_row + r) * 16) * Ldw + k, Ldw);
 #pragma unroll
         for (int e = 0; e < a.num_elements; ++e) {
           a.x[e] = wmma::__float_to_tf32(a.x[e]);
@@ -527,14 +533,14 @@ fused_forward_laplacian_tf32_pipelined_kernel(const float* __restrict__ coordina
     }
     __syncthreads();  // every warp has finished reading H
 #pragma unroll
-    for (int r = 0; r < 4; ++r) {
-      wmma::store_matrix_sync(h_s + (r * 16) * Ldh + column, acc[r], Ldh,
+    for (int r = 0; r < kRowTiles; ++r) {
+      wmma::store_matrix_sync(h_s + ((first_row + r) * 16) * Ldh + column, acc[r], Ldh,
                               wmma::mem_row_major);
     }
     __syncthreads();  // H now holds Z
 
 #pragma unroll
-    for (int k = 0; k < 8; ++k) {
+    for (int k = 0; k < kNeurons; ++k) {
       const int o = o0 + k;
       const float* z = h_s + o * Ldh;
       const float zv = z[lane] + bias_s[o];
@@ -562,16 +568,16 @@ fused_forward_laplacian_tf32_pipelined_kernel(const float* __restrict__ coordina
 #endif
 }
 
-template <int Ldh, int Ldw>
+template <int Ldh, int Ldw, int Warps = 8>
 void launch_tf32_pipelined(const torch::Tensor& coordinates, const torch::Tensor& parameters,
                            torch::Tensor& output, torch::Tensor& laplacian, int64_t batch,
                            cudaStream_t stream) {
-  auto kernel = fused_forward_laplacian_tf32_pipelined_kernel<Ldh, Ldw>;
+  auto kernel = fused_forward_laplacian_tf32_pipelined_kernel<Ldh, Ldw, Warps>;
   constexpr size_t bytes = pipe_shared_bytes<Ldh, Ldw>();
   C10_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                       static_cast<int>(bytes)));
   const int blocks = static_cast<int>((batch + kTcTile - 1) / kTcTile);
-  kernel<<<blocks, 256, bytes, stream>>>(coordinates.data_ptr<float>(),
+  kernel<<<blocks, Warps * kTcTile, bytes, stream>>>(coordinates.data_ptr<float>(),
                                          parameters.data_ptr<float>(), output.data_ptr<float>(),
                                          laplacian.data_ptr<float>(), batch);
 }
@@ -599,6 +605,12 @@ std::vector<torch::Tensor> fused_forward_laplacian_cuda(torch::Tensor coordinate
     launch_tiled<1>(coordinates, parameters, output, laplacian, batch, stream);
   } else if (version == 2) {
     launch_tiled<2>(coordinates, parameters, output, laplacian, batch, stream);
+  } else if (version == 5) {
+    TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major >= 8,
+                "forward v5 (TF32 tensor cores) needs sm_80 or newer");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(parameters.data_ptr<float>()) % 16 == 0,
+                "parameters must be 16-byte aligned for forward v5 (cp.async)");
+    launch_tf32_pipelined<132, 68, 16>(coordinates, parameters, output, laplacian, batch, stream);
   } else if (version == 4) {
     const auto* props = at::cuda::getCurrentDeviceProperties();
     TORCH_CHECK(props->major >= 8, "forward v4 (TF32 tensor cores) needs sm_80 or newer");
