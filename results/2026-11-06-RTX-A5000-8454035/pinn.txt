@@ -1,0 +1,21 @@
+gpu=NVIDIA RTX A5000 sm_86 64SMs driver=575.57.08 torch=2.8.0+cu128 cuda=12.8 python=3.12.15
+steps=5000 interior=16384 boundary=1024 lr=0.001 seed=0 loss=mean(res^2)+100*mean(u_b^2) (time includes compile/capture)
+                       backend  graph   seconds     final loss       rel L2 weights sha256  s to target   step
+(seconds exclude rel-L2 evaluation every 250 steps; target 0.005)
+                         eager     no     34.60   9.755989e-03 5.350946e-03   66c252b830d6        26.02   3750
+    forward_laplacian_compiled     no     17.67   1.230698e-02 1.004238e-02   ee21abae7189        12.77   3250
+                    fused_cuda     no      9.10   9.767316e-03 4.197932e-03   a8e32ed465fb         5.92   3250
+gpu=NVIDIA RTX A5000 sm_86 64SMs driver=575.57.08 torch=2.8.0+cu128 cuda=12.8 python=3.12.15
+steps=5000 interior=16384 boundary=1024 lr=0.001 seed=1 loss=mean(res^2)+100*mean(u_b^2) (time includes compile/capture)
+                       backend  graph   seconds     final loss       rel L2 weights sha256  s to target   step
+(seconds exclude rel-L2 evaluation every 250 steps; target 0.005)
+                         eager     no     34.94   8.659611e-03 3.882683e-03   c98d895893e7        24.51   3500
+    forward_laplacian_compiled     no     17.72   1.440482e-02 7.570463e-03   4746748972c7        14.21   3750
+                    fused_cuda     no      9.11   9.314356e-03 9.829652e-03   52c354c70e8c         6.83   3750
+gpu=NVIDIA RTX A5000 sm_86 64SMs driver=575.57.08 torch=2.8.0+cu128 cuda=12.8 python=3.12.15
+steps=5000 interior=16384 boundary=1024 lr=0.001 seed=2 loss=mean(res^2)+100*mean(u_b^2) (time includes compile/capture)
+                       backend  graph   seconds     final loss       rel L2 weights sha256  s to target   step
+(seconds exclude rel-L2 evaluation every 250 steps; target 0.005)
+                         eager     no     34.37   1.623487e-02 1.767124e-02   903dca25d0aa        24.12   3500
+    forward_laplacian_compiled     no     17.67   9.284249e-03 1.020993e-02   2bc2483be8c4        13.47   3500
+                    fused_cuda     no      9.04   8.723631e-03 3.497414e-03   d98dfcf1d434         6.34   3500

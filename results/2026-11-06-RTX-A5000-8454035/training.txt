@@ -1,0 +1,66 @@
+/users/gzliao/hoad.venv/lib/python3.12/site-packages/torch/_inductor/compile_fx.py:282: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
+  warnings.warn(
+W1106 11:31:03.722000 2628482 /oscar/home/gzliao/hoad.venv/lib/python3.12/site-packages/torch/_inductor/utils.py:1436] [0/0] Not enough SMs to use max_autotune_gemm mode
+gpu=NVIDIA RTX A5000 sm_86 64SMs driver=575.57.08 torch=2.8.0+cu128 cuda=12.8 python=3.12.15
+                               backend  graph      batch    mean ms  median ms     p90 ms   peak MiB
+(mean: wall clock over the loop; median/p90: per-step CUDA events)
+                                 eager     no      4,096      6.105      6.112      6.186       61.1
+                                 eager     no     16,384      6.132      6.047      6.543      244.4
+                                 eager     no     65,536     22.323     22.292     22.478      977.7
+                                 eager    yes      4,096      1.882      1.879      1.881        0.0
+                                 eager    yes     16,384      5.302      5.296      5.302        0.0
+                                 eager    yes     65,536     21.933     21.927     21.954        0.0
+                     forward_laplacian     no      4,096      4.459      4.420      4.520       63.1
+                     forward_laplacian     no     16,384      7.169      7.160      7.165      252.5
+                     forward_laplacian     no     65,536     27.964     27.940     28.045     1010.0
+                     forward_laplacian    yes      4,096      1.564      1.563      1.566        0.0
+                     forward_laplacian    yes     16,384      6.891      6.884      6.892        0.0
+                     forward_laplacian    yes     65,536     27.661     27.657     27.672        0.0
+            forward_laplacian_compiled     no      4,096      1.746      1.716      1.755       41.1
+            forward_laplacian_compiled     no     16,384      2.611      2.592      2.606      164.7
+            forward_laplacian_compiled     no     65,536      9.363      9.358      9.373      659.0
+  forward_laplacian_compiled_cudagraph     no      4,096      1.177      1.101      1.355        0.1
+  forward_laplacian_compiled_cudagraph     no     16,384      2.551      2.542      2.550        0.5
+  forward_laplacian_compiled_cudagraph     no     65,536      9.339      9.331      9.349        2.0
+                  fused_cuda_recompute     no      4,096      5.674      5.510      5.689       63.2
+                  fused_cuda_recompute     no     16,384      7.375      7.348      7.358      252.9
+                  fused_cuda_recompute     no     65,536     28.568     28.530     28.683     1011.5
+                  fused_cuda_recompute    yes      4,096      1.627      1.624      1.629        0.0
+                  fused_cuda_recompute    yes     16,384      7.065      7.063      7.068        0.0
+                  fused_cuda_recompute    yes     65,536     28.201     28.197     28.207        0.0
+                     fused_cuda_bwd_v1     no      4,096      0.942      0.920      0.961       12.1
+                     fused_cuda_bwd_v1     no     16,384      0.955      0.946      0.991       12.3
+                     fused_cuda_bwd_v1     no     65,536      3.421      3.419      3.425       13.0
+                     fused_cuda_bwd_v1    yes      4,096      0.281      0.275      0.278        0.0
+                     fused_cuda_bwd_v1    yes     16,384      0.883      0.899      0.908        0.0
+                     fused_cuda_bwd_v1    yes     65,536      3.433      3.441      3.446        0.0
+                     fused_cuda_bwd_v3     no      4,096      0.986      0.962      0.999       12.2
+                     fused_cuda_bwd_v3     no     16,384      0.990      0.980      1.015       12.3
+                     fused_cuda_bwd_v3     no     65,536      3.816      3.811      3.852       13.1
+                     fused_cuda_bwd_v3    yes      4,096      0.292      0.289      0.292        0.0
+                     fused_cuda_bwd_v3    yes     16,384      0.992      1.027      1.044        0.0
+                     fused_cuda_bwd_v3    yes     65,536      3.932      3.940      3.974        0.0
+                     fused_cuda_bwd_v5     no      4,096      0.982      0.964      0.995       14.4
+                     fused_cuda_bwd_v5     no     16,384      0.981      0.972      1.011       14.6
+                     fused_cuda_bwd_v5     no     65,536      3.496      3.493      3.517       15.3
+                     fused_cuda_bwd_v5    yes      4,096      0.280      0.278      0.280        0.0
+                     fused_cuda_bwd_v5    yes     16,384      0.879      0.850      0.932        0.0
+                     fused_cuda_bwd_v5    yes     65,536      3.515      3.538      3.579        0.0
+                     fused_cuda_bwd_v4     no      4,096      0.969      0.943      0.983       14.4
+                     fused_cuda_bwd_v4     no     16,384      0.972      0.958      0.997       14.6
+                     fused_cuda_bwd_v4     no     65,536      3.555      3.565      3.583       15.3
+                     fused_cuda_bwd_v4    yes      4,096      0.284      0.283      0.284        0.0
+                     fused_cuda_bwd_v4    yes     16,384      0.907      0.876      0.947        0.0
+                     fused_cuda_bwd_v4    yes     65,536      3.581      3.573      3.660        0.0
+                     fused_cuda_bwd_v2     no      4,096      0.961      0.943      0.975       14.4
+                     fused_cuda_bwd_v2     no     16,384      0.966      0.952      0.986       14.6
+                     fused_cuda_bwd_v2     no     65,536      3.631      3.642      3.688       15.3
+                     fused_cuda_bwd_v2    yes      4,096      0.288      0.285      0.288        0.0
+                     fused_cuda_bwd_v2    yes     16,384      0.930      0.894      1.001        0.0
+                     fused_cuda_bwd_v2    yes     65,536      3.669      3.643      3.758        0.0
+                            fused_cuda     no      4,096      0.970      0.948      0.991       14.4
+                            fused_cuda     no     16,384      0.973      0.962      0.996       14.6
+                            fused_cuda     no     65,536      3.329      3.334      3.341       15.3
+                            fused_cuda    yes      4,096      0.270      0.268      0.269        0.0
+                            fused_cuda    yes     16,384      0.856      0.827      0.895        0.0
+                            fused_cuda    yes     65,536      3.375      3.411      3.417        0.0
