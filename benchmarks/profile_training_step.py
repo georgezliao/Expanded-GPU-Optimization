@@ -1,6 +1,8 @@
 """Break one training step into its top GPU kernels and host-side launch count."""
 
 import argparse
+import statistics
+import time
 
 import torch
 from torch.profiler import ProfilerActivity, profile
@@ -31,6 +33,27 @@ def main() -> None:
     for _ in range(5):
         step()
     torch.cuda.synchronize()
+
+    forward_ms: list[float] = []
+    backward_ms: list[float] = []
+    for _ in range(20):
+        optimizer.zero_grad(set_to_none=True)
+        torch.cuda.synchronize()
+        start = time.perf_counter()
+        _, lap = run(model, coordinates)
+        loss = (lap - source).pow(2).mean()
+        torch.cuda.synchronize()
+        middle = time.perf_counter()
+        loss.backward()
+        torch.cuda.synchronize()
+        forward_ms.append((middle - start) * 1e3)
+        backward_ms.append((time.perf_counter() - middle) * 1e3)
+        optimizer.step()
+    print(
+        f"synced split, median of 20: forward+loss {statistics.median(forward_ms):.3f} ms, "
+        f"backward {statistics.median(backward_ms):.3f} ms"
+    )
+
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
         step()
         torch.cuda.synchronize()
