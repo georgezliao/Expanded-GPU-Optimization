@@ -85,7 +85,7 @@ Peak memory during a training step, in MiB above a baseline taken right after wa
 | forward Laplacian + `torch.compile` | 41.1 | 164.7 | 659.0 |
 | fused CUDA forward v2 + backward v6 | 14.4 | 14.6 | 15.3 |
 
-The baseline already holds the weights, gradients and Adam state. Captured CUDA graphs are left out of this table, because their memory pool is allocated during warmup and also sits in the baseline. Fused memory depends on the number of SMs: the block grid sets the size of the scratch and partials buffers, so an A40 (84 SMs) measured 19.8 MiB at 64K.
+The baseline already holds the weights, gradients and Adam state. Captured CUDA graphs are left out of this table, because their memory pool is allocated during warmup and also sits in the baseline. An A40 (84 SMs) measured 19.8 MiB for the fused path at 64K. That fits the scratch and partials buffers being sized by the block grid, though the figure hasn't been broken down.
 
 End-to-end PINN training: 5000 Adam steps, 16K interior and 1K boundary points, seeds 0–2. Time to target is the first evaluation (every 250 steps, clock paused) with relative L2 below 5e-3 against the analytic solution.
 
