@@ -27,4 +27,7 @@ nvidia-smi > "$out/nvidia-smi.txt"
 "$VENV/bin/python" -m benchmarks.benchmark_poisson --device cuda > "$out/inference.txt" 2>&1
 "$VENV/bin/python" -m benchmarks.count_launches > "$out/launches.txt" 2>&1
 "$VENV/bin/python" -m benchmarks.benchmark_training --cuda-graph > "$out/training.txt" 2>&1
+for seed in 0 1 2; do
+  "$VENV/bin/python" -m benchmarks.train_poisson --seed "$seed" >> "$out/pinn.txt" 2>&1
+done
 echo "$out"
