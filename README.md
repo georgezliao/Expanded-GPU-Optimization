@@ -2,7 +2,7 @@
 
 Computes the input Laplacian of a fixed MLP in one fused CUDA kernel, so PINN residuals and training steps don't have to go through PyTorch's autograd graph.
 
-On an RTX A5000 at 16K points, a residual evaluation takes 0.131 ms, compared with 2.075 ms for eager autograd and 0.975 ms for a forward Laplacian under `torch.compile`. It uses 1 kernel launch per call where eager uses 94. At 64K points, a full training step takes 3.300 ms instead of 22.261 ms. The full tables are under [Results](#results), along with the kernel designs that didn't help.
+On an RTX A5000 at 16K points, a residual evaluation takes 0.131 ms, compared with 2.109 ms for eager autograd and 0.975 ms for a forward Laplacian under `torch.compile`. It uses 1 kernel launch per call where eager uses 94. At 64K points, a full training step takes 3.334 ms instead of 22.292 ms, and peak memory during a step is 15.3 MiB instead of 977.7 MiB (measured above a post-warmup baseline). The full tables are under [Results](#results), along with the kernel designs that didn't help.
 
 The kernels are written for one architecture, the tanh MLP described under [Method](#method), so this isn't a general speedup for arbitrary PyTorch models.
 
@@ -35,6 +35,7 @@ Eager autograd computes the Laplacian with one backward pass for the gradient an
 | forward v2 (default) | v1 with two points per lane (64-point tiles), float2 loads |
 | forward v3 | 32-point tiles, hidden GEMMs on TF32 tensor cores (WMMA) |
 | forward v4 | v3 with `cp.async` double-buffered weights and no separate Z buffer (TF32, opt-in) |
+| forward v5 | v4 with 16 warps per block instead of 8 (TF32, opt-in) |
 | backward v1 | persistent blocks re-run the tile forward, save pre-activations to scratch, walk the layers back with the adjoint jet in shared memory; per-block weight-gradient rows, summed on the host |
 | backward v2 | 16-point tiles, weights read through L1, 2 blocks/SM |
 | backward v3 | v2 with one weight-gradient row per SM, updated with `atomicAdd` |
@@ -48,32 +49,53 @@ Correctness is checked before any timing. The fused forward matches the PyTorch 
 
 ## Results
 
-Headline numbers come from `scripts/oscar_bench.sbatch`. Raw outputs are in `results/<date>-<gpu>-<job>/`. The tables below are from `results/2026-10-26-RTX-A5000-7960100/` (RTX A5000, driver 575.57.08, torch 2.8.0+cu128, commit `35318f6`). Times are medians of per-iteration CUDA events, in milliseconds.
+Headline numbers come from `scripts/oscar_bench.sbatch`. Raw outputs are in `results/<date>-<gpu>-<job>/`. The tables below are from `results/2026-11-06-RTX-A5000-8454035/` (RTX A5000, driver 575.57.08, torch 2.8.0+cu128, commit `b289645`). Times are medians of per-iteration CUDA events, in milliseconds.
 
 Residual evaluation, `(u, Laplacian u)`:
 
 | backend | 1K | 16K | 64K |
 |---|---|---|---|
-| eager autograd | 2.089 | 2.075 | 6.817 |
-| forward Laplacian + `torch.compile` | 0.359 | 0.985 | 3.695 |
-| forward Laplacian + `torch.compile` (reduce-overhead) | 0.134 | 0.975 | 3.692 |
-| fused CUDA forward v2 | 0.038 | 0.131 | 0.512 |
-| fused CUDA forward v3 (TF32) | 0.034 | 0.186 | 0.701 |
-| fused CUDA forward v4 (TF32, pipelined) | 0.033 | 0.123 | 0.482 |
+| eager autograd | 2.131 | 2.109 | 6.855 |
+| forward Laplacian + `torch.compile` | 0.357 | 0.981 | 3.694 |
+| forward Laplacian + `torch.compile` (reduce-overhead) | 0.133 | 0.975 | 3.688 |
+| fused CUDA forward v2 | 0.038 | 0.131 | 0.538 |
+| fused CUDA forward v3 (TF32) | 0.035 | 0.185 | 0.699 |
+| fused CUDA forward v4 (TF32, pipelined) | 0.033 | 0.121 | 0.478 |
+| fused CUDA forward v5 (TF32, 16 warps) | 0.031 | 0.112 | 0.453 |
 
-At 16K, eager launches 94 kernels per call, `torch.compile` 19, and the fused path 1.
+At 16K, eager launches 94 kernels per call, `torch.compile` 19, and the fused path 1. Forward v4 and v5 are faster than the FP32 default here, but their Laplacian error is about 1e3 times larger, so they are opt-in.
 
 Training step (forward, backward, Adam):
 
 | backend | 4K | 16K | 64K |
 |---|---|---|---|
-| eager autograd | 5.991 | 6.085 | 22.261 |
-| eager autograd, step captured as a CUDA graph | 1.887 | 5.290 | 21.922 |
-| forward Laplacian + `torch.compile` | 1.717 | 2.578 | 9.361 |
-| fused CUDA forward v2 + backward v2 | 0.947 | 0.954 | 3.622 |
-| fused CUDA forward v2 + backward v4 | 0.947 | 0.954 | 3.534 |
-| fused CUDA forward v2 + backward v6 | 0.951 | 0.956 | 3.300 |
-| same, step captured as a CUDA graph | 0.269 | 0.878 | 3.348 |
+| eager autograd | 6.112 | 6.047 | 22.292 |
+| eager autograd, step captured as a CUDA graph | 1.879 | 5.296 | 21.927 |
+| forward Laplacian + `torch.compile` | 1.716 | 2.592 | 9.358 |
+| fused CUDA forward v2 + backward v2 | 0.943 | 0.952 | 3.642 |
+| fused CUDA forward v2 + backward v4 | 0.943 | 0.958 | 3.565 |
+| fused CUDA forward v2 + backward v6 | 0.948 | 0.962 | 3.334 |
+| same, step captured as a CUDA graph | 0.268 | 0.827 | 3.411 |
+
+Peak memory during a training step, in MiB above a baseline taken right after warmup:
+
+| backend | 4K | 16K | 64K |
+|---|---|---|---|
+| eager autograd | 61.1 | 244.4 | 977.7 |
+| forward Laplacian + `torch.compile` | 41.1 | 164.7 | 659.0 |
+| fused CUDA forward v2 + backward v6 | 14.4 | 14.6 | 15.3 |
+
+The baseline already holds the weights, gradients and Adam state. Captured CUDA graphs are left out of this table, because their memory pool is allocated during warmup and also sits in the baseline. Fused memory depends on the number of SMs: the block grid sets the size of the scratch and partials buffers, so an A40 (84 SMs) measured 19.8 MiB at 64K.
+
+End-to-end PINN training: 5000 Adam steps, 16K interior and 1K boundary points, seeds 0–2. Time to target is the first evaluation (every 250 steps, clock paused) with relative L2 below 5e-3 against the analytic solution.
+
+| backend | total seconds, median | seconds to target, median | final relative L2 by seed |
+|---|---|---|---|
+| eager autograd | 34.60 | 24.51 | 5.35e-3, 3.88e-3, 1.77e-2 |
+| forward Laplacian + `torch.compile` | 17.67 | 13.47 | 1.00e-2, 7.57e-3, 1.02e-2 |
+| fused CUDA forward v2 + backward v6 | 9.10 | 6.34 | 4.20e-3, 9.83e-3, 3.50e-3 |
+
+The backends need a similar number of steps to reach the target, so the gap comes from time per step. Error is not monotonic: in this run every backend ended at least one seed above the 5e-3 it had already reached. Three seeds can't rank the backends on accuracy.
 
 Times vary between GPU models and between Slurm jobs on the same model. At 1K–4K the call is short enough that host CPU speed matters. Before the parameter-pack lookup was cached, the same kernel measured 23 µs and 45 µs of host time per call on two nodes. After the change it measured 16–20 µs, against about 30 µs of kernel time. Compare rows within one results directory. Earlier runs are kept under `results/` for reference.
 
@@ -92,15 +114,15 @@ Things that did not help:
 Results that are still unexplained or need another experiment:
 
 - ncu and the step benchmark disagree on the small backward changes. On an A40, v4 showed the same 2.62 ms as v2 in ncu but a 2.6% faster 64K step, while v6 was 11.6% faster than v4 in ncu and about 3% faster per step. The step also contains the forward kernel, packing, autograd and Adam, which accounts for only part of this. ncu's clock control may also matter, but that hasn't been tested.
-- Backward v2 raised achieved occupancy from about 17% to about 30% on the A40, and DRAM throughput rose from 23% to 61% in a separate ncu run. Backward v3 reduced that DRAM traffic only slightly, so the per-tile weight-gradient updates are not its main source. The remaining global loads have not been attributed with source counters.
+- Backward v2 raised achieved occupancy from about 17% to about 30% on the A40, and DRAM throughput rose from 23% to 61% in a separate ncu run, with no faster step. In backward v6 source counters (A40, 64K), scratch reads are about 46% of global load sectors, GEMM weights 29% and weight-gradient partials 18%, which fits backward v3 barely changing DRAM. The two weight-load lines collect the most stall samples. Prefetching them with `cp.async` won't fit the 49 KB limit for 2 blocks/SM, so that experiment would trade occupancy for it.
 - Backward v5 lowered `mio_throttle`, but `long_scoreboard` rose and the step did not change. It may have moved the stall from shared-memory instructions to L1 weight loads.
-- The `wait` stall in the TF32 kernels barely changed between forward v3 and v4 (2.41 to 2.27). The chained `mma_sync` calls are the suspected cause. Bank conflicts also did not change.
-- Final PINN error depends on the GPU model. Reruns on one node were bit-identical, and a rerun on another A5500 matched to every printed digit. With the same seed and code, fused seed 0 ended at 1.97e-2 on an A5500 and 3.33e-3 in a job whose GPU was not recorded. Summation order in the backward grid is one candidate.
+- The `wait` stall ratio in the TF32 kernels barely moved across forward v3, v4 and v5 (2.41, 2.27, 2.21). The chained `mma_sync` calls are the suspected cause. Forward v5 still got faster by doubling warps active, and `math_pipe_throttle` rose from 0.42 to 1.37, which may mean the tensor pipe is close to saturated.
+- Final PINN error depends on the GPU model. Reruns on one node were bit-identical, and runs on different nodes of the same model matched to every printed digit. With the same seed, code and backward, fused seed 0 ended at 1.97e-2 on an A5500 and 3.33e-3 in a job whose GPU was not recorded. Changing the backward block count changes weight gradients by up to 2.65e-7 relative, and different models get different grids, so summation order is one source. It isn't the only one, because eager also differs between models.
 - One or two seeds can end much worse than the rest. Over 8 seeds on an A40, eager had no final relative L2 above 1e-2, while `torch.compile` and the fused path had one each, at different seeds. Eight seeds cannot separate the backends. The cause of the bad seeds is not known.
 - Host-side time varies between nodes. Two A40 nodes measured 0.80 ms and 1.08 ms for the same 16K backward v4 step.
-- The PyTorch forward Laplacian trains slower than eager at 64K although its forward is faster. Its backward has not been profiled.
+- The PyTorch forward Laplacian trains slower than eager at 64K although its forward is faster: 5.96 ms forward and 24.19 ms backward, against 7.46 ms and 16.57 ms (A40). Its backward spends 4.8 ms in device-to-device copies. Autograd's handling of the in-place row updates is the likely source, but this has not been traced.
 
-Directions to try next: build a roofline for these kernels, including a shared-memory roofline, since shared-memory bandwidth limited several versions. Test the kernel design on a higher-order operator such as the biharmonic, and on a PDE harder than this Poisson problem. Find what prevents `torch.compile` from fusing below 19 kernels. Check whether gradients stay bit-identical when only the backward block count changes.
+Directions to try next: build a roofline for these kernels, including a shared-memory roofline, since shared-memory bandwidth limited several versions. Test the kernel design on a higher-order operator such as the biharmonic, and on a PDE harder than this Poisson problem. Find what prevents `torch.compile` from fusing below 19 kernels.
 
 ## Repository layout
 
