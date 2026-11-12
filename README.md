@@ -1,10 +1,12 @@
 # Fused CUDA Kernels for Higher-Order Autodiff
 
-Computes the input Laplacian of a fixed MLP in one fused CUDA kernel, so PINN residuals and training steps don't have to go through PyTorch's autograd graph.
+While working with physics-informed neural networks (PINNs), I became interested in how much of their training time goes into computing derivatives. Evaluating a physics residual often requires second derivatives of the network’s output with respect to its inputs. I wanted to explore how much faster this could be if I computed those derivatives directly in CUDA.
 
-On an RTX A5000 at 16K points, a residual evaluation takes 0.131 ms, compared with 2.109 ms for eager autograd and 0.975 ms for a forward Laplacian under `torch.compile`. It uses 1 kernel launch per call where eager uses 94. At 64K points, a full training step takes 3.334 ms instead of 22.292 ms, and peak memory during a step is 15.3 MiB instead of 977.7 MiB (measured above a post-warmup baseline). The full tables are under [Results](#results), along with the kernel designs that didn't help.
+This project computes the input Laplacian of a tanh MLP in a single fused CUDA kernel, avoiding PyTorch’s autograd graph for that calculation. It was also a way for me to explore GPU optimization: reducing kernel launches, reusing intermediate values, and figuring out which ideas actually improve performance.
 
-The kernels are written for one architecture, the tanh MLP described under [Method](#method), so this isn't a general speedup for arbitrary PyTorch models.
+On an RTX A5000 at 16K points, residual evaluation takes 0.131 ms, compared with 2.109 ms for eager autograd and 0.975 ms for a forward Laplacian under `torch.compile`. At 64K points, a full training step takes 3.334 ms instead of 22.292 ms, with peak memory above a post-warmup baseline falling from 977.7 MiB to 15.3 MiB. The full benchmarks, along with the kernel designs that didn’t help, are under [Results](https://github.com/georgezliao/Expanded-GPU-Optimization#results).
+
+The kernels are specialized for the fixed network architecture described under [Method](https://github.com/georgezliao/Expanded-GPU-Optimization#method). The goal was to see how far I could optimize this particular computation; the results don’t extend automatically to arbitrary PyTorch models.
 
 ## The problem
 
